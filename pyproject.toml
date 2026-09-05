@@ -79,6 +79,10 @@ exclude = ["libs/basil"]
 [tool.ruff.lint]
 ignore = ["E741"]  # Allow 'l' for transistor length
 
+[tool.ruff.lint.isort]
+# PDK submodules are intentionally absent from the public Ruff CI checkout.
+known-first-party = ["flow", "pdk"]
+
 [tool.ruff.lint.per-file-ignores]
 "flow/adc/behavioral.py" = ["F841", "F401"]
 "pdk/**" = ["F401", "F403", "F405"]
