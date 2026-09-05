@@ -344,392 +344,75 @@ def AdcTb(params: AdcTbParams) -> h.Module:
     return tb
 
 
-def frida_1_noise_vs_rate_check(run_dir: Path) -> Path:
-    """Run the extracted ADC briefly at three rates with circuit checks."""
-
-    from flow.circuit.results import adc_signal_names
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    parameters = (
-        AdcTbParams(
-            view="frida65a",
-            symbol_rate=320e6,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="frida65a",
-            symbol_rate=960e6,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="frida65a",
-            symbol_rate=1.6e9,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    simulations = []
-    for params in parameters:
-        tb = AdcTb(params)
-        h.pdk.compile(tb)
-        signal_names = adc_signal_names(params.view, pex_cell=params.pex_cell)
-        save_targets = [
-            re.sub(r"([/<>-])", r"\\\1", raw_name)
-            for canonical_name, raw_name in signal_names.items()
-            if canonical_name != "time_s"
-        ]
-        simulations.append(
-            hs.Sim(
-                tb=tb,
-                attrs=[
-                    site.install.include(h.pdk.Corner.TYP),
-                    site.install.include_pre_simulation(),
-                    hs.Include(path=site.ADC_PEX_NETLIST),
-                    hs.Options(name="temp", value=25.0),
-                    hs.Options(name="save", value="selected"),
-                    hs.Save(save_targets),
-                    h.Literal(
-                        "check_caps static_capacitor type=distr\n"
-                        "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                        "gate2power=on gate2ground=on\n"
-                        "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                        "check_dcpath static_dcpath net=[xtop.vdd_a xtop.vdd_d xtop.vdd_dac 0]\n"
-                        "check_rcdelay static_rcdelay node=[*] maxnrise=20 maxnfall=20\n"
-                        "check_stack static_stack count=3\n"
-                        "check_topology static_topology node=[*] pin2gnd=on\n"
-                        "check_nodecap dyn_nodecap node=[xtop.vin_p xtop.vin_n xtop.comp_out] time=[50n 99n]\n"
-                        "check_setuphold dyn_setuphold node=[xtop.comp_out] ref_node=xtop.seq_logic "
-                        "setup_time=50p hold_time=50p\n"
-                        "check_power dyn_subcktpwr inst=[xtop.xadc] depth=1 port=[*] power=on"
-                    ),
-                    hs.Tran(
-                        tstop=100e-9,
-                        name="tran",
-                        options={
-                            "strobeperiod": min(1.0 / float(params.symbol_rate) / 16.0, 50e-12),
-                            "strobeoutput": "strobeonly",
-                        },
-                    ),
-                ],
-            )
-        )
-    hs.run(
-        simulations,
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=4",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        ),
-    )
-    return run_dir
-
-
-def frida_1_transfer_curve_check(run_dir: Path) -> Path:
-    """Run the extracted-ADC transfer testbench briefly with circuit checks."""
-
-    from flow.circuit.results import adc_signal_names
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    params = AdcTbParams(
-        view="frida65a",
-        symbol_rate=1.6e9,
-        conversions=151,
-        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
-        seq_logic_phase_delay_symbols=2.0,
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    tb = AdcTb(params)
-    h.pdk.compile(tb)
-    save_targets = [
-        re.sub(r"([/<>-])", r"\\\1", raw_name)
-        for canonical_name, raw_name in adc_signal_names(params.view).items()
-        if canonical_name != "time_s"
-    ]
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
-            hs.Include(path=site.ADC_PEX_NETLIST),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save(save_targets),
-            h.Literal(
-                "check_caps static_capacitor type=distr\n"
-                "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                "gate2power=on gate2ground=on\n"
-                "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                "check_dcpath static_dcpath net=[xtop.vdd_a xtop.vdd_d xtop.vdd_dac 0]\n"
-                "check_rcdelay static_rcdelay node=[*] maxnrise=20 maxnfall=20\n"
-                "check_stack static_stack count=3\n"
-                "check_topology static_topology node=[*] pin2gnd=on\n"
-                "check_nodecap dyn_nodecap node=[xtop.vin_p xtop.vin_n xtop.comp_out] time=[50n 99n]\n"
-                "check_setuphold dyn_setuphold node=[xtop.comp_out] ref_node=xtop.seq_logic "
-                "setup_time=50p hold_time=50p\n"
-                "check_power dyn_subcktpwr inst=[xtop.xadc] depth=1 port=[*] power=on"
-            ),
-            hs.Tran(tstop=100e-9, name="tran", options={"strobeperiod": 50e-12, "strobeoutput": "strobeonly"}),
-        ],
-    )
-    simulation.run(
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=4",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        )
-    )
-    return run_dir
-
-
-def hdl21gen_noise_vs_rate_check(run_dir: Path) -> Path:
-    """Run the generated ADC briefly at three rates with circuit checks."""
-
-    from flow.circuit.results import adc_signal_names
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    parameters = (
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=320e6,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=960e6,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=1.6e9,
-            conversions=1,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    standard_cells = (
-        *site.STANDARD_CELL_SPICE_NETLISTS,
-        Path(__file__).resolve().parents[2] / "design/spice/adc_digital.sp",
-    )
-    simulations = []
-    for params in parameters:
-        tb = AdcTb(params)
-        h.pdk.compile(tb)
-        save_targets = [
-            re.sub(r"([/<>-])", r"\\\1", raw_name)
-            for canonical_name, raw_name in adc_signal_names(params.view).items()
-            if canonical_name != "time_s"
-        ]
-        simulations.append(
-            hs.Sim(
-                tb=tb,
-                attrs=[
-                    site.install.include(h.pdk.Corner.TYP),
-                    site.install.include_pre_simulation(),
-                    h.Literal(
-                        "\n".join(
-                            (
-                                "simulator lang=spice",
-                                *(f'.include "{path}"' for path in standard_cells),
-                                "simulator lang=spectre",
-                            )
-                        )
-                    ),
-                    hs.Options(name="temp", value=25.0),
-                    hs.Options(name="save", value="selected"),
-                    hs.Save(save_targets),
-                    h.Literal(
-                        "check_caps static_capacitor type=distr\n"
-                        "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                        "gate2power=on gate2ground=on\n"
-                        "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                        "check_dcpath static_dcpath net=[xtop.vdd_a xtop.vdd_d xtop.vdd_dac 0]\n"
-                        "check_rcdelay static_rcdelay node=[*] maxnrise=20 maxnfall=20\n"
-                        "check_stack static_stack count=3\n"
-                        "check_topology static_topology node=[*] pin2gnd=on\n"
-                        "check_nodecap dyn_nodecap node=[xtop.vin_p xtop.vin_n xtop.comp_out] time=[50n 99n]\n"
-                        "check_setuphold dyn_setuphold node=[xtop.comp_out] ref_node=xtop.seq_logic "
-                        "setup_time=50p hold_time=50p\n"
-                        "check_power dyn_subcktpwr inst=[xtop.xadc] depth=1 port=[*] power=on"
-                    ),
-                    hs.Tran(
-                        tstop=100e-9,
-                        name="tran",
-                        options={
-                            "strobeperiod": min(1.0 / float(params.symbol_rate) / 16.0, 50e-12),
-                            "strobeoutput": "strobeonly",
-                        },
-                    ),
-                ],
-            )
-        )
-    hs.run(
-        simulations,
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=4",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        ),
-    )
-    return run_dir
-
-
-def hdl21gen_transfer_curve_check(run_dir: Path) -> Path:
-    """Run the generated-ADC transfer testbench briefly with circuit checks."""
-
-    from flow.circuit.results import adc_signal_names
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    params = AdcTbParams(
-        view="hdl21gen",
-        symbol_rate=1.6e9,
-        conversions=151,
-        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
-        seq_logic_phase_delay_symbols=2.0,
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    standard_cells = (
-        *site.STANDARD_CELL_SPICE_NETLISTS,
-        Path(__file__).resolve().parents[2] / "design/spice/adc_digital.sp",
-    )
-    tb = AdcTb(params)
-    h.pdk.compile(tb)
-    save_targets = [
-        re.sub(r"([/<>-])", r"\\\1", raw_name)
-        for canonical_name, raw_name in adc_signal_names(params.view).items()
-        if canonical_name != "time_s"
-    ]
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
-            h.Literal(
-                "\n".join(
-                    (
-                        "simulator lang=spice",
-                        *(f'.include "{path}"' for path in standard_cells),
-                        "simulator lang=spectre",
-                    )
-                )
-            ),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save(save_targets),
-            h.Literal(
-                "check_caps static_capacitor type=distr\n"
-                "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                "gate2power=on gate2ground=on\n"
-                "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                "check_dcpath static_dcpath net=[xtop.vdd_a xtop.vdd_d xtop.vdd_dac 0]\n"
-                "check_rcdelay static_rcdelay node=[*] maxnrise=20 maxnfall=20\n"
-                "check_stack static_stack count=3\n"
-                "check_topology static_topology node=[*] pin2gnd=on\n"
-                "check_nodecap dyn_nodecap node=[xtop.vin_p xtop.vin_n xtop.comp_out] time=[50n 99n]\n"
-                "check_setuphold dyn_setuphold node=[xtop.comp_out] ref_node=xtop.seq_logic "
-                "setup_time=50p hold_time=50p\n"
-                "check_power dyn_subcktpwr inst=[xtop.xadc] depth=1 port=[*] power=on"
-            ),
-            hs.Tran(tstop=100e-9, name="tran", options={"strobeperiod": 50e-12, "strobeoutput": "strobeonly"}),
-        ],
-    )
-    simulation.run(
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=4",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        )
-    )
-    return run_dir
-
-
-def _run_extracted_adc_noise(
+def _run_adc_sim(
     run_dir: Path,
-    cases: tuple[tuple[str, AdcTbParams], ...],
-    pex_netlist: Path,
+    params: AdcTbParams,
     *,
+    pex_netlist: Path | None = None,
+    noise: bool = False,
+    check: bool = False,
     netlist_only: bool = False,
+    expected_disconnect: bool = False,
+    maximum_waveform_records: int | None = None,
 ) -> Path:
-    """Run one configured extracted-ADC noise campaign."""
+    """Execute one configured ADC experiment, not an entire campaign.
 
-    if not pex_netlist.is_file():
-        raise FileNotFoundError(pex_netlist)
-    # Fixed family budgets: four FRIDA-1 jobs or three FRIDA-2 jobs per worker.
-    spectre_threads = 6 if cases[0][1].view == "frida65a" else 8
+    Targets define the experiment: they construct complete testbench parameters,
+    select explicit PEX inputs and noise settings, and submit independent cases
+    concurrently. This executor owns the shared mechanics: generate/compile the
+    testbench, validate extracted interfaces, build the Spectre simulation, run
+    it (or only write its netlist), and save the repository-native measurement.
+    Flavor/rate sweeps and campaign selection belong in the named targets below,
+    not in additional flavor-specific wrappers.
+    """
+
     from flow.analysis.io import write_measurement
     from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
     from pdk import tsmc65
     from pdk.tsmc65 import site
 
+    # Fixed budgets paired with the target pools: four x six or three x eight.
+    spectre_threads = 6 if params.view == "frida65a" else 8
+    if (params.view != "hdl21gen") != (pex_netlist is not None):
+        raise ValueError("extracted views require a PEX input; HDL21 must not have one")
+    metadata = {
+        "target": run_dir.name,
+        "view": params.view,
+        "conversions": params.conversions,
+        "symbol_rate_hz": float(params.symbol_rate),
+        "weights": get_cdac_weights(params.dut.cdac),
+        "spectre_threads": spectre_threads,
+        "check": check,
+        "netlist_only": netlist_only,
+        "transient_noise": noise and not check,
+        "expected_historical_disconnect": expected_disconnect,
+    }
+    if pex_netlist is not None:
+        if not pex_netlist.is_file() or not pex_netlist.stat().st_size:
+            raise FileNotFoundError(pex_netlist)
+        if params.pex_cell == "adc_12b_17step":
+            summary_path = pex_netlist.parent / "signoff_summary.json"
+            summary = json.loads(summary_path.read_text())
+            known_disconnect = (
+                expected_disconnect
+                and params.view == "frida65a"
+                and pex_netlist.stem in ("frida1_2layer_radix17.pex", "frida1_2layer_radix20.pex")
+                and summary.get("warnings") == ["expected LVS mismatch: disconnected historical MOM layer"]
+            )
+            if summary["lvs_correct"] is not True and not known_disconnect:
+                raise ValueError(f"unaccepted LVS result in {summary_path}")
+            if Path(summary["pex_netlist"]).name != pex_netlist.name:
+                raise ValueError(f"PEX input differs from {summary_path}")
+        metadata.update(
+            pex_netlist=str(pex_netlist),
+            pex_sha256=hashlib.sha256(pex_netlist.read_bytes()).hexdigest(),
+        )
+
     h.pdk.set_default(tsmc65.pdk_logic)
-    simulations = []
-    for case_name, params in cases:
-        tb = AdcTb(params)
-        h.pdk.compile(tb)
-        signal_names = adc_signal_names(params.view, pex_cell=params.pex_cell)
-        # Calibre's interface is positional; validate the actual extracted header.
+    tb = AdcTb(params)
+    h.pdk.compile(tb)
+    signal_names = adc_signal_names(params.view, pex_cell=params.pex_cell)
+    if pex_netlist is not None:
         text = pex_netlist.read_text().replace("\\\n", " ")
         cell = tb.xadc.of.module
         header = re.search(rf"^subckt {re.escape(cell.name)}\s*\(([^)]*)\)", text, re.MULTILINE | re.IGNORECASE)
@@ -742,760 +425,26 @@ def _run_extracted_adc_noise(
         missing = [name for name in signal_names.values() if name.startswith("xtop.xadc.") and name[10:] not in nodes]
         if missing:
             raise ValueError(f"PEX waveform nodes missing: {missing}")
-        save_targets = [
-            re.sub(r"([/<>-])", r"\\\1", raw_name)
-            for canonical_name, raw_name in signal_names.items()
-            if canonical_name != "time_s"
-        ]
-        tstop_s = params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
-        simulations.append(
-            hs.Sim(
-                name=case_name,
-                tb=tb,
-                attrs=[
-                    site.install.include(h.pdk.Corner.TYP),
-                    site.install.include_pre_simulation(),
-                    hs.Include(path=pex_netlist),
-                    hs.Options(name="temp", value=25.0),
-                    hs.Options(name="save", value="selected"),
-                    hs.Save(save_targets),
-                    hs.Tran(
-                        tstop=tstop_s,
-                        name="tran",
-                        noise=True,
-                        options={
-                            "strobeperiod": min(1.0 / float(params.symbol_rate) / 16.0, 50e-12),
-                            "strobeoutput": "strobeonly",
-                            "noisefmin": 1.0 / tstop_s,
-                            "noisefmax": "25G",
-                            "noiseseed": 1,
-                        },
-                    ),
-                ],
-            )
-        )
-    if netlist_only:
-        from vlsirtools.spice.spectre import SpectreSim
 
-        for (case_name, _), simulation in zip(cases, simulations, strict=True):
-            destination = run_dir if len(cases) == 1 else run_dir / case_name
-            backend = SpectreSim(hs.to_proto(simulation), SimOptions(rundir=destination))
-            backend.setup()
-            backend.write_netlist()
-        return run_dir
-    # HDL21 types cover scalar and sequence inputs, all result formats, and all analyses;
-    # this call requests a SIM_DATA list containing one transient per simulation.
-    results = cast(
-        list[SimResult],
-        hs.run(
-            simulations,
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=(
-                    "+preset=mx",
-                    f"+mt={spectre_threads}",
-                    "+lqtimeout",
-                    "3600",
-                    "+escchars",
-                    "+log",
-                    "spectre.log",
-                ),
-            ),
-        ),
-    )
-    for index, ((case_name, params), result) in enumerate(zip(cases, results, strict=True)):
-        transient = cast(TranResult, result[AnalysisType.TRAN])
-        if len(cases) == 1:
-            case_dir = run_dir
-        else:
-            case_dir = run_dir / case_name
-            (run_dir / str(index)).rename(case_dir)
-        measurement = convert_spectre_adc_to_measurement(
-            transient.data,
-            params=params,
-            raw_path=case_dir / "netlist.raw",
-            signal_names=adc_signal_names(params.view, pex_cell=params.pex_cell),
-        )
-        write_measurement(case_dir / "result.h5", measurement)
-    return run_dir
-
-
-def _run_frida_1_1layer_radix17_noise_vs_rate(run_dir: Path) -> Path:
-    """Run the one-layer radix-17 extracted ADC at 2, 6, and 10 Msps."""
-
-    from pdk.tsmc65 import site
-
-    dut = AdcParams(
-        adc_bits=12,
-        cdac=CdacParams(
-            n_dac=11,
-            n_extra=5,
-            redun_strat=RedunStrat.SUBRDX2_OVLY,
-            weights=(768, 512, 320, 192, 96, 64, 32, 24, 12, 10, 5, 4, 4, 2, 1, 1),
-        ),
-    )
-    cases = (
-        (
-            "2msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix17",
-                dut=dut,
-                symbol_rate=320e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "6msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix17",
-                dut=dut,
-                symbol_rate=960e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "10msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix17",
-                dut=dut,
-                symbol_rate=1.6e9,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-    )
-    return _run_extracted_adc_noise(run_dir, cases, site.ADC_PEX_NETLIST)
-
-
-def _run_frida_1_1layer_radix20_noise_vs_rate(run_dir: Path) -> Path:
-    """Run the one-layer radix-20 extracted ADC at 2, 6, and 10 Msps."""
-
-    from pdk.tsmc65 import site
-
-    dut = AdcParams(
-        adc_bits=12,
-        cdac=CdacParams(
-            n_dac=11,
-            n_extra=5,
-            redun_strat=RedunStrat.SUBRDX2_OVLY,
-            weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1),
-        ),
-    )
-    cases = (
-        (
-            "2msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix20",
-                dut=dut,
-                symbol_rate=320e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "6msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix20",
-                dut=dut,
-                symbol_rate=960e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "10msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_1layer_radix20",
-                dut=dut,
-                symbol_rate=1.6e9,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-    )
-    pex_netlist = site.ADC_PEX_NETLIST.parent / "adc_1layer_radix20/adc_1layer_radix20.pex.netlist"
-    return _run_extracted_adc_noise(run_dir, cases, pex_netlist)
-
-
-def _run_frida_1_2layer_radix17_noise_vs_rate(run_dir: Path) -> Path:
-    """Run the two-layer radix-17 extracted ADC at 2, 6, and 10 Msps."""
-
-    from pdk.tsmc65 import site
-
-    dut = AdcParams(
-        adc_bits=12,
-        cdac=CdacParams(
-            n_dac=11,
-            n_extra=5,
-            redun_strat=RedunStrat.SUBRDX2_OVLY,
-            weights=(768, 512, 320, 192, 96, 64, 32, 24, 12, 10, 5, 4, 4, 2, 1, 1),
-        ),
-    )
-    cases = (
-        (
-            "2msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix17",
-                dut=dut,
-                symbol_rate=320e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "6msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix17",
-                dut=dut,
-                symbol_rate=960e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "10msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix17",
-                dut=dut,
-                symbol_rate=1.6e9,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-    )
-    pex_netlist = site.ADC_PEX_NETLIST.parent / "adc_2layer_radix17/adc_2layer_radix17.pex.netlist"
-    return _run_extracted_adc_noise(run_dir, cases, pex_netlist)
-
-
-def _run_frida_1_2layer_radix20_noise_vs_rate(run_dir: Path) -> Path:
-    """Run the two-layer radix-20 extracted ADC at 2, 6, and 10 Msps."""
-
-    from pdk.tsmc65 import site
-
-    dut = AdcParams(
-        adc_bits=12,
-        cdac=CdacParams(
-            n_dac=11,
-            n_extra=5,
-            redun_strat=RedunStrat.SUBRDX2_OVLY,
-            weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1),
-        ),
-    )
-    cases = (
-        (
-            "2msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix20",
-                dut=dut,
-                symbol_rate=320e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "6msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix20",
-                dut=dut,
-                symbol_rate=960e6,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-        (
-            "10msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida65a",
-                pex_cell="adc_2layer_radix20",
-                dut=dut,
-                symbol_rate=1.6e9,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-    )
-    pex_netlist = site.ADC_PEX_NETLIST.parent / "adc_2layer_radix20/adc_2layer_radix20.pex.netlist"
-    return _run_extracted_adc_noise(run_dir, cases, pex_netlist)
-
-
-def frida_1_noise_vs_rate(run_dir: Path) -> Path:
-    """Run all four extracted ADC flavors at 2, 6, and 10 Msps."""
-
-    flavor_campaigns = (
-        ("adc_1layer_radix17", _run_frida_1_1layer_radix17_noise_vs_rate),
-        ("adc_1layer_radix20", _run_frida_1_1layer_radix20_noise_vs_rate),
-        ("adc_2layer_radix17", _run_frida_1_2layer_radix17_noise_vs_rate),
-        ("adc_2layer_radix20", _run_frida_1_2layer_radix20_noise_vs_rate),
-    )
-    for flavor_name, run_flavor_campaign in flavor_campaigns:
-        flavor_run_dir = run_dir / flavor_name
-        flavor_run_dir.mkdir()
-        run_flavor_campaign(flavor_run_dir)
-    return run_dir
-
-
-def _run_frida2_noise_10msps(run_dir: Path, pex_netlist: Path, *, netlist_only: bool = False) -> Path:
-    cases = (
-        (
-            "10msps_cm700mv_dc50mv",
-            AdcTbParams(
-                view="frida2",
-                pex_cell="adc_12b_17step",
-                dut=AdcParams(adc_bits=12, cdac=CdacParams()),
-                symbol_rate=1.6 * G,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-            ),
-        ),
-    )
-    return _run_extracted_adc_noise(run_dir, cases, pex_netlist, netlist_only=netlist_only)
-
-
-def _find_latest_signed_off_pex(target: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "build" / "layout" / "adc" / target
-    for candidate in sorted(root.glob("*/signoff_summary.json"), reverse=True):
-        summary = json.loads(candidate.read_text(encoding="utf-8"))
-        # Resolve bundled artifacts relative to their summary on remote workers.
-        pex_netlist = candidate.parent / Path(summary["pex_netlist"]).name
-        expected_disconnect = target in ("frida1_2layer_radix17", "frida1_2layer_radix20")
-        accepted = summary["lvs_correct"] or (
-            expected_disconnect
-            and summary.get("warnings") == ["expected LVS mismatch: disconnected historical MOM layer"]
-        )
-        if accepted and pex_netlist.is_file() and pex_netlist.stat().st_size:
-            return pex_netlist
-    raise FileNotFoundError(f"no accepted PEX run exists beneath {root}")
-
-
-def frida2_2layer_radix17_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run 100 connected two-layer FRIDA-2 conversions at 10 MS/s."""
-
-    return _run_frida2_noise_10msps(
-        run_dir, _find_latest_signed_off_pex("frida2_2layer_radix17"), netlist_only=netlist_only
-    )
-
-
-def frida2_3layer_radix17_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run 100 connected three-layer FRIDA-2 conversions at 10 MS/s."""
-
-    return _run_frida2_noise_10msps(
-        run_dir, _find_latest_signed_off_pex("frida2_3layer_radix17"), netlist_only=netlist_only
-    )
-
-
-def frida1_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run four FRIDA-1 flavors concurrently: 100 conversions, six threads each."""
-
-    jobs = []
-    for target, weights in (
-        ("frida1_1layer_radix17", (768, 512, 320, 192, 96, 64, 32, 24, 12, 10, 5, 4, 4, 2, 1, 1)),
-        ("frida1_1layer_radix20", (768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1)),
-        ("frida1_2layer_radix17", (768, 512, 320, 192, 96, 64, 32, 24, 12, 10, 5, 4, 4, 2, 1, 1)),
-        ("frida1_2layer_radix20", (768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1)),
-    ):
-        params = AdcTbParams(
-            view="frida65a",
-            pex_cell="adc_12b_17step",
-            dut=AdcParams(adc_bits=12, cdac=CdacParams(weights=weights)),
-            symbol_rate=1.6 * G,
-            conversions=100,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        )
-        pex = _find_latest_signed_off_pex(target)
-        case_dir = run_dir / target
-        case_dir.mkdir(parents=True)
-        (case_dir / "input.json").write_text(
-            json.dumps(
-                {
-                    "target": target,
-                    "pex_netlist": str(pex),
-                    "pex_sha256": hashlib.sha256(pex.read_bytes()).hexdigest(),
-                    "expected_historical_disconnect": "2layer" in target,
-                    "spectre_threads": 6,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-        jobs.append((case_dir, ((target, params),), pex))
-    # Four six-thread simulations use 24 of a Juno/Jupiter worker's 28 cores.
-    # Spawn isolates HDL21/PDK caches and writes each HDF5 as its case finishes.
-    with ProcessPoolExecutor(max_workers=len(jobs), mp_context=get_context("spawn")) as executor:
-        futures = [executor.submit(_run_extracted_adc_noise, *job, netlist_only=netlist_only) for job in jobs]
-        for future in futures:
-            future.result()
-    return run_dir
-
-
-def frida2_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run three FRIDA-2 stacks concurrently: 100 conversions, eight threads each."""
-
-    jobs = []
-    params = AdcTbParams(
-        view="frida2",
-        pex_cell="adc_12b_17step",
-        dut=AdcParams(adc_bits=12, cdac=CdacParams()),
-        symbol_rate=1.6 * G,
-        conversions=100,
-        vin_diff=h.Vdc.Params(dc=0.05),
-        seq_logic_phase_delay_symbols=2.0,
-    )
-    for target in ("frida2_1layer_radix17", "frida2_2layer_radix17", "frida2_3layer_radix17"):
-        pex = _find_latest_signed_off_pex(target)
-        case_dir = run_dir / target
-        case_dir.mkdir(parents=True)
-        (case_dir / "input.json").write_text(
-            json.dumps(
-                {
-                    "target": target,
-                    "pex_netlist": str(pex),
-                    "pex_sha256": hashlib.sha256(pex.read_bytes()).hexdigest(),
-                    "expected_historical_disconnect": False,
-                    "spectre_threads": 8,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-        jobs.append((case_dir, ((target, params),), pex))
-    # Three eight-thread simulations use the same 24-core worker budget.
-    with ProcessPoolExecutor(max_workers=len(jobs), mp_context=get_context("spawn")) as executor:
-        futures = [executor.submit(_run_extracted_adc_noise, *job, netlist_only=netlist_only) for job in jobs]
-        for future in futures:
-            future.result()
-    return run_dir
-
-
-def frida_1_supply_noise_vs_rate(run_dir: Path) -> Path:
-    """Run the 15 extracted-ADC rate and supply-noise combinations."""
-
-    from flow.analysis.io import write_measurement
-    from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    rates = ((2, 320e6), (6, 960e6), (10, 1.6e9))
-    noise_rms_v = 1e-3
-    noise_cases = (
-        ("none", (0.0, 0.0, 0.0)),
-        ("vdda", (noise_rms_v, 0.0, 0.0)),
-        ("vddd", (0.0, noise_rms_v, 0.0)),
-        ("vddac", (0.0, 0.0, noise_rms_v)),
-        ("all", (noise_rms_v, noise_rms_v, noise_rms_v)),
-    )
-    cases = tuple(
-        (
-            f"{rate_msps}msps_{noise_name}",
-            AdcTbParams(
-                view="frida65a",
-                symbol_rate=symbol_rate,
-                conversions=100,
-                vin_diff=h.Vdc.Params(dc=0.05),
-                seq_logic_phase_delay_symbols=2.0,
-                supply_series_resistance_ohm=1.0,
-                supply_series_inductance_h=1e-9,
-                supply_decoupling_capacitance_f=1e-12,
-                supply_noise_rms_v=rail_noise_rms_v,
-                supply_noise_bandwidth_hz=25e9,
-            ),
-        )
-        for rate_msps, symbol_rate in rates
-        for noise_name, rail_noise_rms_v in noise_cases
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    simulations = []
-    for case_name, params in cases:
-        tb = AdcTb(params)
-        h.pdk.compile(tb)
-        save_targets = [
-            re.sub(r"([/<>-])", r"\\\1", raw_name)
-            for canonical_name, raw_name in adc_signal_names(params.view).items()
-            if canonical_name != "time_s"
-        ]
+    save_targets = [
+        re.sub(r"([/<>-])", r"\\\1", raw_name)
+        for canonical_name, raw_name in signal_names.items()
+        if canonical_name != "time_s"
+    ]
+    if params.supply_series_resistance_ohm or params.supply_series_inductance_h:
         save_targets.extend(("xtop.vdd_a", "xtop.vdd_d", "xtop.vdd_dac"))
-        tstop_s = params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
-        simulations.append(
-            hs.Sim(
-                name=case_name,
-                tb=tb,
-                attrs=[
-                    site.install.include(h.pdk.Corner.TYP),
-                    site.install.include_pre_simulation(),
-                    hs.Include(path=site.ADC_PEX_NETLIST),
-                    hs.Options(name="temp", value=25.0),
-                    hs.Options(name="save", value="selected"),
-                    hs.Save(save_targets),
-                    hs.Tran(
-                        tstop=tstop_s,
-                        name="tran",
-                        options={
-                            "strobeperiod": min(1.0 / float(params.symbol_rate) / 16.0, 50e-12),
-                            "strobeoutput": "strobeonly",
-                            "noisefmin": 1.0 / tstop_s,
-                            "noisefmax": "25G",
-                            "noiseseed": 1,
-                        },
-                    ),
-                ],
-            )
-        )
-    results = cast(
-        list[SimResult],
-        hs.run(
-            simulations,
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=4", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
-            ),
-        ),
-    )
-    for index, ((case_name, params), result) in enumerate(zip(cases, results, strict=True)):
-        transient = cast(TranResult, result[AnalysisType.TRAN])
-        case_dir = run_dir / case_name
-        (run_dir / str(index)).rename(case_dir)
-        measurement = convert_spectre_adc_to_measurement(
-            transient.data,
-            params=params,
-            raw_path=case_dir / "netlist.raw",
-            signal_names=adc_signal_names(params.view),
-            maximum_waveform_records=3,
-        )
-        write_measurement(case_dir / "result.h5", measurement)
-    return run_dir
-
-
-def frida_1_transfer_curve(run_dir: Path) -> Path:
-    """Run the extracted ADC from -750 mV to +750 mV in 10 mV steps."""
-
-    from flow.analysis.io import write_measurement
-    from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    params = AdcTbParams(
-        view="frida65a",
-        symbol_rate=1.6e9,
-        conversions=151,
-        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
-        seq_logic_phase_delay_symbols=2.0,
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    tb = AdcTb(params)
-    h.pdk.compile(tb)
-    save_targets = [
-        re.sub(r"([/<>-])", r"\\\1", raw_name)
-        for canonical_name, raw_name in adc_signal_names(params.view).items()
-        if canonical_name != "time_s"
+    attrs = [
+        site.install.include(h.pdk.Corner.TYP),
+        site.install.include_pre_simulation(),
     ]
-    tstop_s = params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
-            hs.Include(path=site.ADC_PEX_NETLIST),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save(save_targets),
-            hs.Tran(tstop=tstop_s, name="tran", options={"strobeperiod": 50e-12, "strobeoutput": "strobeonly"}),
-        ],
-    )
-    # HDL21 types cover every result format and analysis; this call requests
-    # SIM_DATA containing one transient.
-    result = cast(
-        SimResult,
-        simulation.run(
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=4", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
-            )
-        ),
-    )
-    transient = cast(TranResult, result[AnalysisType.TRAN])
-    measurement = convert_spectre_adc_to_measurement(
-        transient.data,
-        params=params,
-        raw_path=run_dir / "netlist.raw",
-        signal_names=adc_signal_names(params.view),
-        maximum_waveform_records=3,
-    )
-    write_measurement(run_dir / "result.h5", measurement)
-    return run_dir
-
-
-def hdl21gen_noise_vs_rate(run_dir: Path) -> Path:
-    """Run 100 generated-ADC conversions at 2, 6, and 10 Msps."""
-
-    from flow.analysis.io import write_measurement
-    from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    parameters = (
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=320e6,
-            conversions=100,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=960e6,
-            conversions=100,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-        AdcTbParams(
-            view="hdl21gen",
-            symbol_rate=1.6e9,
-            conversions=100,
-            vin_diff=h.Vdc.Params(dc=0.05),
-            seq_logic_phase_delay_symbols=2.0,
-        ),
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    standard_cells = (
-        *site.STANDARD_CELL_SPICE_NETLISTS,
-        Path(__file__).resolve().parents[2] / "design/spice/adc_digital.sp",
-    )
-    simulations = []
-    for params in parameters:
-        tb = AdcTb(params)
-        h.pdk.compile(tb)
-        save_targets = [
-            re.sub(r"([/<>-])", r"\\\1", raw_name)
-            for canonical_name, raw_name in adc_signal_names(params.view).items()
-            if canonical_name != "time_s"
-        ]
-        tstop_s = params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
-        simulations.append(
-            hs.Sim(
-                tb=tb,
-                attrs=[
-                    site.install.include(h.pdk.Corner.TYP),
-                    site.install.include_pre_simulation(),
-                    h.Literal(
-                        "\n".join(
-                            (
-                                "simulator lang=spice",
-                                *(f'.include "{path}"' for path in standard_cells),
-                                "simulator lang=spectre",
-                            )
-                        )
-                    ),
-                    hs.Options(name="temp", value=25.0),
-                    hs.Options(name="save", value="selected"),
-                    hs.Save(save_targets),
-                    hs.Tran(
-                        tstop=tstop_s,
-                        name="tran",
-                        noise=True,
-                        options={
-                            "strobeperiod": min(1.0 / float(params.symbol_rate) / 16.0, 50e-12),
-                            "strobeoutput": "strobeonly",
-                            "noisefmin": 1.0 / tstop_s,
-                            "noisefmax": "25G",
-                            "noiseseed": 1,
-                        },
-                    ),
-                ],
-            )
+    if pex_netlist is not None:
+        attrs.append(hs.Include(path=pex_netlist))
+    else:
+        standard_cells = (
+            *site.STANDARD_CELL_SPICE_NETLISTS,
+            Path(__file__).resolve().parents[2] / "design/spice/adc_digital.sp",
         )
-    # HDL21 types cover scalar and sequence inputs, all result formats, and all analyses;
-    # this call requests a SIM_DATA list containing one transient per simulation.
-    results = cast(
-        list[SimResult],
-        hs.run(
-            simulations,
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=4", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
-            ),
-        ),
-    )
-    for index, (params, result) in enumerate(zip(parameters, results, strict=True)):
-        transient = cast(TranResult, result[AnalysisType.TRAN])
-        case_dir = run_dir / str(index)
-        measurement = convert_spectre_adc_to_measurement(
-            transient.data,
-            params=params,
-            raw_path=case_dir / "netlist.raw",
-            signal_names=adc_signal_names(params.view),
-            maximum_waveform_records=3,
-        )
-        write_measurement(case_dir / "result.h5", measurement)
-    return run_dir
-
-
-def hdl21gen_transfer_curve(run_dir: Path) -> Path:
-    """Run the generated ADC from -750 mV to +750 mV in 10 mV steps."""
-
-    from flow.analysis.io import write_measurement
-    from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
-    from pdk import tsmc65
-    from pdk.tsmc65 import site
-
-    params = AdcTbParams(
-        view="hdl21gen",
-        symbol_rate=1.6e9,
-        conversions=151,
-        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
-        seq_logic_phase_delay_symbols=2.0,
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    standard_cells = (
-        *site.STANDARD_CELL_SPICE_NETLISTS,
-        Path(__file__).resolve().parents[2] / "design/spice/adc_digital.sp",
-    )
-    tb = AdcTb(params)
-    h.pdk.compile(tb)
-    save_targets = [
-        re.sub(r"([/<>-])", r"\\\1", raw_name)
-        for canonical_name, raw_name in adc_signal_names(params.view).items()
-        if canonical_name != "time_s"
-    ]
-    tstop_s = params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
+        attrs.append(
             h.Literal(
                 "\n".join(
                     (
@@ -1504,97 +453,344 @@ def hdl21gen_transfer_curve(run_dir: Path) -> Path:
                         "simulator lang=spectre",
                     )
                 )
-            ),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save(save_targets),
-            hs.Tran(tstop=tstop_s, name="tran", options={"strobeperiod": 50e-12, "strobeoutput": "strobeonly"}),
-        ],
-    )
-    # HDL21 types cover every result format and analysis; this call requests
-    # SIM_DATA containing one transient.
-    result = cast(
-        SimResult,
-        simulation.run(
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=4", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
             )
+        )
+    attrs.extend(
+        (hs.Options(name="temp", value=25.0), hs.Options(name="save", value="selected"), hs.Save(save_targets))
+    )
+    tstop_s = 100e-9 if check else params.conversions * len(params.seq_init_pattern) / float(params.symbol_rate)
+    tran_options = {
+        "strobeperiod": (
+            50e-12
+            if isinstance(params.vin_diff, hs.LinearSweep)
+            else min(1.0 / float(params.symbol_rate) / 16.0, 50e-12)
+        ),
+        "strobeoutput": "strobeonly",
+    }
+    # Preserve the supply experiment's frequency settings without silently
+    # enabling device transient noise, which its previous runner did not enable.
+    if not check and (noise or any(params.supply_noise_rms_v) or params.supply_series_resistance_ohm):
+        tran_options.update(noisefmin=1.0 / tstop_s, noisefmax="25G", noiseseed=1)
+    if check:
+        attrs.append(
+            h.Literal(
+                "check_caps static_capacitor type=distr\n"
+                "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
+                "gate2power=on gate2ground=on\n"
+                "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
+                "check_dcpath static_dcpath net=[xtop.vdd_a xtop.vdd_d xtop.vdd_dac 0]\n"
+                "check_rcdelay static_rcdelay node=[*] maxnrise=20 maxnfall=20\n"
+                "check_stack static_stack count=3\n"
+                "check_topology static_topology node=[*] pin2gnd=on\n"
+                "check_nodecap dyn_nodecap node=[xtop.vin_p xtop.vin_n xtop.comp_out] time=[50n 99n]\n"
+                "check_setuphold dyn_setuphold node=[xtop.comp_out] ref_node=xtop.seq_logic "
+                "setup_time=50p hold_time=50p\n"
+                "check_power dyn_subcktpwr inst=[xtop.xadc] depth=1 port=[*] power=on"
+            )
+        )
+    attrs.append(hs.Tran(tstop=tstop_s, name="tran", noise=noise and not check, options=tran_options))
+    simulation = hs.Sim(tb=tb, attrs=attrs)
+    options = SimOptions(
+        simulator=SupportedSimulators.SPECTRE,
+        fmt=ResultFormat.NONE if check else ResultFormat.SIM_DATA,
+        rundir=run_dir,
+        simulator_args=(
+            "+preset=mx",
+            f"+mt={spectre_threads}",
+            "+lqtimeout",
+            "3600",
+            "+escchars",
+            "+log",
+            "spectre.log",
+            *(("-ahdllint=warn", "-ahdllint_log", "ahdllint.log") if check else ()),
         ),
     )
-    transient = cast(TranResult, result[AnalysisType.TRAN])
-    measurement = convert_spectre_adc_to_measurement(
-        transient.data,
-        params=params,
-        raw_path=run_dir / "netlist.raw",
-        signal_names=adc_signal_names(params.view),
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "input.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    if netlist_only:
+        from vlsirtools.spice.spectre import SpectreSim
+
+        backend = SpectreSim(hs.to_proto(simulation), options)
+        backend.setup()
+        backend.write_netlist()
+        return run_dir
+    result = simulation.run(options)
+    if not check:
+        transient = cast(TranResult, cast(SimResult, result)[AnalysisType.TRAN])
+        measurement = convert_spectre_adc_to_measurement(
+            transient.data,
+            params=params,
+            raw_path=run_dir / "netlist.raw",
+            signal_names=signal_names,
+            maximum_waveform_records=maximum_waveform_records,
+        )
+        write_measurement(run_dir / "result.h5", measurement)
+    return run_dir
+
+
+def hdl21_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run the generated ADC at 2, 6, and 10 MS/s with 50 mV input."""
+
+    with ProcessPoolExecutor(max_workers=3, mp_context=get_context("spawn")) as executor:
+        futures = []
+        for rate, symbol_rate in ((2, 0.32 * G), (6, 0.96 * G), (10, 1.6 * G)):
+            params = AdcTbParams(
+                view="hdl21gen",
+                symbol_rate=symbol_rate,
+                conversions=1 if check else 100,
+                vin_diff=h.Vdc.Params(dc=0.05),
+                seq_logic_phase_delay_symbols=2.0,
+            )
+            futures.append(
+                executor.submit(
+                    _run_adc_sim,
+                    run_dir / f"{rate}msps_cm700mv_dc50mv",
+                    params,
+                    noise=True,
+                    check=check,
+                    netlist_only=netlist_only,
+                    maximum_waveform_records=3,
+                )
+            )
+        for future in futures:
+            future.result()
+    return run_dir
+
+
+def hdl21_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run the generated ADC from -750 mV to +750 mV in 10 mV steps."""
+
+    params = AdcTbParams(
+        view="hdl21gen",
+        symbol_rate=1.6 * G,
+        conversions=151,
+        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
+        seq_logic_phase_delay_symbols=2.0,
+    )
+    return _run_adc_sim(
+        run_dir,
+        params,
+        check=check,
+        netlist_only=netlist_only,
         maximum_waveform_records=3,
     )
-    write_measurement(run_dir / "result.h5", measurement)
+
+
+def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run all four historical flavors at 10 MS/s, 100 conversions each."""
+
+    root = Path(__file__).resolve().parents[2] / "build/layout/adc"
+    with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as executor:
+        futures = []
+        for layers in (1, 2):
+            for radix, cdac in (
+                (17, CdacParams()),
+                (20, CdacParams(weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1))),
+            ):
+                target = f"frida1_{layers}layer_radix{radix}"
+                pex = root / target / "20260905_171235" / f"{target}.pex.netlist"
+                params = AdcTbParams(
+                    view="frida65a",
+                    pex_cell="adc_12b_17step",
+                    dut=AdcParams(adc_bits=12, cdac=cdac),
+                    symbol_rate=1.6 * G,
+                    conversions=1 if check else 100,
+                    vin_diff=h.Vdc.Params(dc=0.05),
+                    seq_logic_phase_delay_symbols=2.0,
+                )
+                futures.append(
+                    executor.submit(
+                        _run_adc_sim,
+                        run_dir / target,
+                        params,
+                        pex_netlist=pex,
+                        noise=True,
+                        check=check,
+                        netlist_only=netlist_only,
+                        expected_disconnect=layers == 2,
+                    )
+                )
+        for future in futures:
+            future.result()
+    return run_dir
+
+
+def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run the four original PEX flavors at 2, 6, and 10 MS/s."""
+
+    from pdk.tsmc65 import site
+
+    with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as executor:
+        futures = []
+        for layers in (1, 2):
+            for radix, cdac in (
+                (17, CdacParams()),
+                (20, CdacParams(weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1))),
+            ):
+                cell = f"adc_{layers}layer_radix{radix}"
+                pex = (
+                    site.ADC_PEX_NETLIST
+                    if cell == "adc_1layer_radix17"
+                    else site.ADC_PEX_NETLIST.parent / cell / f"{cell}.pex.netlist"
+                )
+                for rate, symbol_rate in ((2, 0.32 * G), (6, 0.96 * G), (10, 1.6 * G)):
+                    params = AdcTbParams(
+                        view="frida65a",
+                        pex_cell=cell,
+                        dut=AdcParams(adc_bits=12, cdac=cdac),
+                        symbol_rate=symbol_rate,
+                        conversions=1 if check else 100,
+                        vin_diff=h.Vdc.Params(dc=0.05),
+                        seq_logic_phase_delay_symbols=2.0,
+                    )
+                    futures.append(
+                        executor.submit(
+                            _run_adc_sim,
+                            run_dir / cell / f"{rate}msps_cm700mv_dc50mv",
+                            params,
+                            pex_netlist=pex,
+                            noise=True,
+                            check=check,
+                            netlist_only=netlist_only,
+                        )
+                    )
+        for future in futures:
+            future.result()
+    return run_dir
+
+
+def frida1_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run the original extracted ADC from -750 mV to +750 mV in 10 mV steps."""
+
+    from pdk.tsmc65 import site
+
+    params = AdcTbParams(
+        view="frida65a",
+        symbol_rate=1.6 * G,
+        conversions=151,
+        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
+        seq_logic_phase_delay_symbols=2.0,
+    )
+    return _run_adc_sim(
+        run_dir,
+        params,
+        pex_netlist=site.ADC_PEX_NETLIST,
+        check=check,
+        netlist_only=netlist_only,
+        maximum_waveform_records=3,
+    )
+
+
+def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run the 15 original extracted-ADC rate/supply-noise combinations."""
+
+    from pdk.tsmc65 import site
+
+    noise_rms_v = 1e-3
+    with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as executor:
+        futures = []
+        for rate, symbol_rate in ((2, 0.32 * G), (6, 0.96 * G), (10, 1.6 * G)):
+            for name, rail_noise in (
+                ("none", (0.0, 0.0, 0.0)),
+                ("vdda", (noise_rms_v, 0.0, 0.0)),
+                ("vddd", (0.0, noise_rms_v, 0.0)),
+                ("vddac", (0.0, 0.0, noise_rms_v)),
+                ("all", (noise_rms_v, noise_rms_v, noise_rms_v)),
+            ):
+                params = AdcTbParams(
+                    view="frida65a",
+                    symbol_rate=symbol_rate,
+                    conversions=1 if check else 100,
+                    vin_diff=h.Vdc.Params(dc=0.05),
+                    seq_logic_phase_delay_symbols=2.0,
+                    supply_series_resistance_ohm=1.0,
+                    supply_series_inductance_h=1e-9,
+                    supply_decoupling_capacitance_f=1e-12,
+                    supply_noise_rms_v=rail_noise,
+                    supply_noise_bandwidth_hz=25e9,
+                )
+                futures.append(
+                    executor.submit(
+                        _run_adc_sim,
+                        run_dir / f"{rate}msps_{name}",
+                        params,
+                        pex_netlist=site.ADC_PEX_NETLIST,
+                        check=check,
+                        netlist_only=netlist_only,
+                        maximum_waveform_records=3,
+                    )
+                )
+        for future in futures:
+            future.result()
+    return run_dir
+
+
+def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+    """Run all three connected radix-17 stacks at 10 MS/s, 100 conversions each."""
+
+    root = Path(__file__).resolve().parents[2] / "build/layout/adc"
+    with ProcessPoolExecutor(max_workers=3, mp_context=get_context("spawn")) as executor:
+        futures = []
+        for layers, stamp in ((1, "20260905_193440"), (2, "20260905_193629"), (3, "20260905_193816")):
+            target = f"frida2_{layers}layer_radix17"
+            params = AdcTbParams(
+                view="frida2",
+                pex_cell="adc_12b_17step",
+                dut=AdcParams(adc_bits=12, cdac=CdacParams()),
+                symbol_rate=1.6 * G,
+                conversions=1 if check else 100,
+                vin_diff=h.Vdc.Params(dc=0.05),
+                seq_logic_phase_delay_symbols=2.0,
+            )
+            futures.append(
+                executor.submit(
+                    _run_adc_sim,
+                    run_dir / target,
+                    params,
+                    pex_netlist=root / target / stamp / f"{target}.pex.netlist",
+                    noise=True,
+                    check=check,
+                    netlist_only=netlist_only,
+                )
+            )
+        for future in futures:
+            future.result()
     return run_dir
 
 
 def main() -> None:
-    """Create one output directory and run one named ADC target."""
+    """Select an experiment; check and netlist-only are execution modes."""
 
     targets = {
         target.__name__: target
         for target in (
-            frida_1_noise_vs_rate_check,
-            frida_1_noise_vs_rate,
-            frida_1_supply_noise_vs_rate,
-            frida_1_transfer_curve_check,
-            frida_1_transfer_curve,
-            frida2_2layer_radix17_10msps,
-            frida2_3layer_radix17_10msps,
-            frida1_10msps,
-            frida2_10msps,
-            hdl21gen_noise_vs_rate_check,
-            hdl21gen_noise_vs_rate,
-            hdl21gen_transfer_curve_check,
-            hdl21gen_transfer_curve,
+            hdl21_fixed_input_noise_vs_rate,
+            hdl21_transfer_curve,
+            frida1_fixed_input_noise,
+            frida1_fixed_input_noise_vs_rate,
+            frida1_transfer_curve,
+            frida1_supply_noise_vs_rate,
+            frida2_fixed_input_noise,
         )
     }
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", nargs="?", choices=sorted(targets))
-    parser.add_argument(
-        "--netlist-only", action="store_true", help="Preflight a 100-conversion campaign without Spectre"
-    )
+    parser.add_argument("target", nargs="?", choices=list(targets))
+    parser.add_argument("--check", action="store_true", help="Run 100 ns with circuit checks and AHDL lint")
+    parser.add_argument("--netlist-only", action="store_true", help="Write and validate the deck without Spectre")
     args = parser.parse_args()
     if args.target is None:
         print("Available ADC simulation targets:")
-        for name in sorted(targets):
+        for name in targets:
             print(f"  {name}")
         return
     run_dir = (
         Path(__file__).resolve().parents[2]
-        / "build"
-        / "sim"
-        / "adc"
+        / "build/sim/adc"
         / args.target
         / datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     )
     run_dir.mkdir(parents=True, exist_ok=False)
-    if args.netlist_only:
-        if args.target not in (
-            "frida1_10msps",
-            "frida2_10msps",
-            "frida2_2layer_radix17_10msps",
-            "frida2_3layer_radix17_10msps",
-        ):
-            parser.error("--netlist-only applies to the 100-conversion extracted campaigns")
-        if args.target == "frida1_10msps":
-            frida1_10msps(run_dir, netlist_only=True)
-        elif args.target == "frida2_10msps":
-            frida2_10msps(run_dir, netlist_only=True)
-        elif args.target == "frida2_2layer_radix17_10msps":
-            frida2_2layer_radix17_10msps(run_dir, netlist_only=True)
-        else:
-            frida2_3layer_radix17_10msps(run_dir, netlist_only=True)
-    else:
-        targets[args.target](run_dir)
+    targets[args.target](run_dir, check=args.check, netlist_only=args.netlist_only)
 
 
 if __name__ == "__main__":

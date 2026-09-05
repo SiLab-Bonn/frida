@@ -115,15 +115,16 @@ uv run python -m flow.samp.sim
 uv run python -m flow.cdac.sim
 ```
 
-Each target owns its reviewed parameter recipe. The short `_check` targets run
+Each target owns its reviewed parameter recipe. ADC targets use `--check`;
+other blocks retain their short `_check` targets. These diagnostic modes run
 noise-free transients with Spectre circuit checks and AHDL linting:
 
 ```bash
 # ADC generated-view and extracted-view checks
-uv run python -m flow.adc.sim hdl21gen_noise_vs_rate_check
-uv run python -m flow.adc.sim hdl21gen_transfer_curve_check
-uv run python -m flow.adc.sim frida_1_noise_vs_rate_check
-uv run python -m flow.adc.sim frida_1_transfer_curve_check
+uv run python -m flow.adc.sim hdl21_fixed_input_noise_vs_rate --check
+uv run python -m flow.adc.sim hdl21_transfer_curve --check
+uv run python -m flow.adc.sim frida1_fixed_input_noise_vs_rate --check
+uv run python -m flow.adc.sim frida1_transfer_curve --check
 
 # Comparator checks
 uv run python -m flow.comp.sim frida65_baseline_check
@@ -141,12 +142,12 @@ run beneath `build/sim/<module>/<target>/<YYYYMMDD_HHMMSS>/`:
 
 ```bash
 # Reviewed ADC campaigns
-uv run python -m flow.adc.sim hdl21gen_noise_vs_rate
-uv run python -m flow.adc.sim frida_1_noise_vs_rate
-uv run python -m flow.adc.sim frida2_2layer_radix17_10msps
-uv run python -m flow.adc.sim frida2_3layer_radix17_10msps
-uv run python -m flow.adc.sim hdl21gen_transfer_curve
-uv run python -m flow.adc.sim frida_1_transfer_curve
+uv run python -m flow.adc.sim hdl21_fixed_input_noise_vs_rate
+uv run python -m flow.adc.sim frida1_fixed_input_noise_vs_rate
+uv run python -m flow.adc.sim frida1_fixed_input_noise
+uv run python -m flow.adc.sim frida2_fixed_input_noise
+uv run python -m flow.adc.sim hdl21_transfer_curve
+uv run python -m flow.adc.sim frida1_transfer_curve
 
 # Comparator campaigns
 uv run python -m flow.comp.sim frida65_baseline_noise
@@ -157,11 +158,11 @@ uv run python -m flow.samp.sim frida65_baseline_transient
 uv run python -m flow.cdac.sim frida65_baseline_transient
 ```
 
-The extracted fixed-input target groups the one-layer and two-layer radix-17
+The extracted fixed-input rate sweep groups the one-layer and two-layer radix-17
 and radix-20 ADCs beneath one timestamped run. Each flavor has its own named
-subdirectory containing the 2, 6, and 10 MS/s results. The four flavor groups
-run sequentially so that the complete comparison remains one coherent
-campaign.
+subdirectory containing the 2, 6, and 10 MS/s results. Independent cases run
+concurrently within a fixed worker budget, while retaining one coherent
+campaign directory.
 
 The ADC and comparator runners convert completed raw results to typed HDF5 in
 each case directory. Sampler and CDAC retain the Spectre raw result and log;
@@ -173,7 +174,7 @@ manifest. Accepted analysis directories remain explicit paths in
 
 Every executable target builds one native HDL21 `Sim` per parameter variant
 and calls `Sim.run()` or `hs.run()` with the timestamped output as the VLSIR
-run directory. ADC batches use HDL21's sequence execution, while the larger
+run directory. ADC batches use isolated spawned processes, while the larger
 comparator candidate campaign bounds its standard-library executor; the
 single-case sampler and CDAC targets run directly. ADC and comparator convert
 the returned transient to typed HDF5 before releasing it; the standalone
@@ -311,26 +312,26 @@ Spectre flow exposes one fixed-input noise campaign for each DUT view:
 
 ```bash
 uv run python -m flow.scans.scan_behavioral
-uv run python -m flow.adc.sim hdl21gen_noise_vs_rate
-uv run python -m flow.adc.sim frida_1_noise_vs_rate
+uv run python -m flow.adc.sim hdl21_fixed_input_noise_vs_rate
+uv run python -m flow.adc.sim frida1_fixed_input_noise_vs_rate
 ```
 
-Use the corresponding `_check` target for a short, noise-free Spectre run with
+Use the same target with `--check` for a short, noise-free Spectre run with
 circuit checks and AHDL linting. Results are written below a fresh
 `build/sim/adc/<target>/<YYYYMMDD_HHMMSS>/`; omitting the target lists all
 choices.
 
-For the extracted-layout comparison, `frida1_10msps` selects all four historical
-flavors and `frida2_10msps` selects the connected one-, two-, and three-layer
-radix-17 variants. Each case uses 100 conversions, 50 mV differential input,
-700 mV common mode, 1.2 V supplies, and transient device noise. These reuse
+For the extracted-layout comparison, `frida1_fixed_input_noise` selects all four
+historical flavors and `frida2_fixed_input_noise` selects the connected one-,
+two-, and three-layer radix-17 variants. Each case uses 100 conversions, 50 mV
+differential input, 700 mV common mode, 1.2 V supplies, and transient device noise. These reuse
 the same testbench and result conversion as the rate-sweep targets.
 
 ```bash
-uv run python -m flow.adc.sim frida1_10msps --netlist-only
-uv run python -m flow.adc.sim frida2_10msps --netlist-only
-uv run python -m flow.adc.sim frida1_10msps
-uv run python -m flow.adc.sim frida2_10msps
+uv run python -m flow.adc.sim frida1_fixed_input_noise --netlist-only
+uv run python -m flow.adc.sim frida2_fixed_input_noise --netlist-only
+uv run python -m flow.adc.sim frida1_fixed_input_noise
+uv run python -m flow.adc.sim frida2_fixed_input_noise
 uv run python -m flow.analysis.runner adc_pex_flavor_paths --inputs /path/to/completed/campaign
 ```
 
@@ -340,6 +341,12 @@ Each case records its PEX SHA-256. A worker snapshot must include the selected
 `build/layout/adc/<target>/<timestamp>/` signoff summary and PEX netlist.
 Only the two historical two-layer targets may accept the explicitly recorded
 disconnect warning; FRIDA-2 requires raw LVS `CORRECT`.
+
+These comparison targets pin their reviewed extraction directories explicitly;
+they do not search for the latest extraction. Update those paths deliberately
+after reviewing a replacement signoff run. `_run_adc_sim()` executes one case;
+the named targets own the experiment parameters and concurrent submission.
+Targets are listed in HDL21, FRIDA-1, then FRIDA-2 order, without old-name aliases.
 
 The standard sequence has a 100 ns active conversion window at a 1.6 GHz
 symbol rate, followed by padding to a 160 ns record. Thus “10 MS/s” describes

@@ -4,7 +4,6 @@ import inspect
 import json
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
-from pathlib import Path
 from threading import Barrier
 
 import hdl21 as h
@@ -151,173 +150,367 @@ def test_supply_noise_testbench_repeats_independent_rail_networks() -> None:
     assert text.count("noisevec=") == 1
 
 
-def test_extracted_flavors_share_one_campaign_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    flavor_names = (
-        "adc_1layer_radix17",
-        "adc_1layer_radix20",
-        "adc_2layer_radix17",
-        "adc_2layer_radix20",
-    )
-    calls = []
-
-    def record_flavor_campaign(run_dir: Path) -> Path:
-        calls.append(run_dir)
-        return run_dir
-
-    for flavor_name in flavor_names:
-        monkeypatch.setattr(
-            sim, f"_run_frida_1_{flavor_name.removeprefix('adc_')}_noise_vs_rate", record_flavor_campaign
-        )
-
-    assert sim.frida_1_noise_vs_rate(tmp_path) == tmp_path
-    assert calls == [tmp_path / flavor_name for flavor_name in flavor_names]
-    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(flavor_names)
-
-
-def test_frida2_noise_recipe_uses_hundred_conversions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {}
-    pex_netlist = tmp_path / "adc.pex.netlist"
-
-    def record_campaign(
-        run_dir: Path,
-        cases: tuple[tuple[str, sim.AdcTbParams], ...],
-        netlist: Path,
-        *,
-        netlist_only: bool = False,
-    ) -> Path:
-        captured.update(cases=cases, pex_netlist=netlist)
-        return run_dir
-
-    monkeypatch.setattr(sim, "_run_extracted_adc_noise", record_campaign)
-
-    assert sim._run_frida2_noise_10msps(tmp_path, pex_netlist) == tmp_path
-    case_name, params = captured["cases"][0]
-    assert case_name == "10msps_cm700mv_dc50mv"
-    assert params.pex_cell == "adc_12b_17step"
-    assert params.view == "frida2"
-    assert params.conversions == 100
-    assert float(params.symbol_rate) == pytest.approx(1.6e9)
-    assert captured["pex_netlist"] == pex_netlist
-
-
-def test_find_latest_signed_off_pex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repository = tmp_path / "repository"
-    module = repository / "flow/adc/sim.py"
-    run = repository / "build/layout/adc/frida2_2layer_radix17/20260903_170000"
-    run.mkdir(parents=True)
-    pex = run / "frida2_2layer_radix17.pex.netlist"
-    pex.write_text("pex\n", encoding="utf-8")
-    (run / "signoff_summary.json").write_text(
-        json.dumps({"lvs_correct": True, "pex_netlist": str(pex)}), encoding="utf-8"
-    )
-    monkeypatch.setattr(sim, "__file__", str(module))
-
-    assert sim._find_latest_signed_off_pex("frida2_2layer_radix17") == pex
-
-
-def test_extracted_noise_runner_enables_transient_noise() -> None:
-    assert "noise=True" in inspect.getsource(sim._run_extracted_adc_noise)
-
-
 @pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
 @pytest.mark.parametrize("netlist_only", (False, True))
-def test_hundred_conversion_campaigns(family, count, netlist_only, tmp_path, monkeypatch):
+@pytest.mark.parametrize("check", (False, True))
+def test_fixed_input_campaigns(family, count, netlist_only, check, tmp_path, monkeypatch):
     calls = []
     started = Barrier(count)
-    pex = tmp_path / "input.pex.netlist"
-    pex.write_text("test input")
-    monkeypatch.setattr(sim, "_find_latest_signed_off_pex", lambda target: pex)
 
     def pool(*, max_workers, mp_context):
         assert max_workers == count
         assert mp_context.get_start_method() == "spawn"
-        # Threads keep the mock visible; the barrier requires every flavor to
-        # enter before any can finish. A serialized runner fails this test.
         return ThreadPoolExecutor(max_workers=max_workers)
 
-    def capture(run_dir, cases, netlist, *, netlist_only=False):
-        calls.append((run_dir, cases[0], netlist, netlist_only))
+    def capture(directory, params, **options):
+        calls.append((directory, params, options))
         started.wait(timeout=10)
-        return run_dir
+        return directory
 
     monkeypatch.setattr(sim, "ProcessPoolExecutor", pool)
-    monkeypatch.setattr(sim, "_run_extracted_adc_noise", capture)
-    getattr(sim, f"{family}_10msps")(tmp_path / "campaign", netlist_only=netlist_only)
+    monkeypatch.setattr(sim, "_run_adc_sim", capture)
+    root = tmp_path / "campaign"
+    assert getattr(sim, f"{family}_fixed_input_noise")(root, check=check, netlist_only=netlist_only) == root
     assert len(calls) == count
-    assert len({name for _, (name, _), _, _ in calls}) == count
-    assert sum(json.loads((directory / "input.json").read_text())["spectre_threads"] for directory, *_ in calls) == 24
-    for directory, (name, params), netlist, preflight in calls:
-        assert directory.name == name
-        assert directory.parent == tmp_path / "campaign"
-        assert json.loads((directory / "input.json").read_text())["spectre_threads"] == (8 if family == "frida2" else 6)
-        assert params.conversions == 100
+    assert len({directory.name for directory, *_ in calls}) == count
+    for directory, params, options in calls:
+        assert directory.parent == root
+        assert params.conversions == (1 if check else 100)
         assert params.pex_cell == "adc_12b_17step"
         assert params.view == ("frida2" if family == "frida2" else "frida65a")
         assert float(params.symbol_rate) == 1.6e9
         assert float(params.vin_diff.dc) == 0.05
         assert float(params.vin_cm.dc) == pytest.approx(0.7)
-        assert netlist == pex and preflight == netlist_only
-        assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in name else 2047)
+        assert options["netlist_only"] == netlist_only and options["check"] == check
+        assert options["noise"] is True
+        assert options["pex_netlist"].name == f"{directory.name}.pex.netlist"
+        assert options["pex_netlist"].parent.name.startswith("20260905_")
+        assert options.get("expected_disconnect", False) == (family == "frida1" and "2layer" in directory.name)
+        assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in directory.name else 2047)
 
 
 @pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
 def test_concurrent_campaign_propagates_case_failure(family, count, tmp_path, monkeypatch):
-    pex = tmp_path / "input.pex.netlist"
-    pex.write_text("test input")
     calls = []
-    monkeypatch.setattr(sim, "_find_latest_signed_off_pex", lambda target: pex)
     monkeypatch.setattr(
         sim, "ProcessPoolExecutor", lambda **kwargs: ThreadPoolExecutor(max_workers=kwargs["max_workers"])
     )
 
-    def fail_one(run_dir, *_args, **_kwargs):
-        calls.append(run_dir.name)
-        if "1layer_radix17" in run_dir.name:
+    def fail_one(directory, *_args, **_kwargs):
+        calls.append(directory.name)
+        if "1layer_radix17" in directory.name:
             raise RuntimeError("simulator failed")
-        return run_dir
+        return directory
 
-    monkeypatch.setattr(sim, "_run_extracted_adc_noise", fail_one)
+    monkeypatch.setattr(sim, "_run_adc_sim", fail_one)
     with pytest.raises(RuntimeError, match="simulator failed"):
-        getattr(sim, f"{family}_10msps")(tmp_path / "campaign")
+        getattr(sim, f"{family}_fixed_input_noise")(tmp_path)
     assert len(calls) == count
 
 
-@pytest.mark.parametrize("target,accepted", (("frida1_2layer_radix17", True), ("frida2_2layer_radix17", False)))
-def test_only_historical_two_layer_campaign_accepts_known_disconnect(target, accepted, tmp_path, monkeypatch):
-    monkeypatch.setattr(sim, "__file__", str(tmp_path / "flow/adc/sim.py"))
-    run = tmp_path / "build/layout/adc" / target / "20260905_171235"
-    run.mkdir(parents=True)
-    (run / "adc.pex.netlist").write_text("pex")
-    (run / "signoff_summary.json").write_text(
+@pytest.mark.parametrize(
+    "target,count,workers",
+    (
+        ("hdl21_fixed_input_noise_vs_rate", 3, 3),
+        ("frida1_fixed_input_noise_vs_rate", 12, 4),
+        ("frida1_supply_noise_vs_rate", 15, 4),
+        ("hdl21_transfer_curve", 1, None),
+        ("frida1_transfer_curve", 1, None),
+    ),
+)
+@pytest.mark.parametrize("check", (False, True))
+def test_other_campaign_recipes(target, count, workers, check, tmp_path, monkeypatch):
+    calls = []
+
+    def pool(*, max_workers, mp_context):
+        assert max_workers == workers
+        assert mp_context.get_start_method() == "spawn"
+        return ThreadPoolExecutor(max_workers=max_workers)
+
+    def capture(directory, params, **options):
+        calls.append((directory, params, options))
+        return directory
+
+    monkeypatch.setattr(sim, "ProcessPoolExecutor", pool)
+    monkeypatch.setattr(sim, "_run_adc_sim", capture)
+    assert getattr(sim, target)(tmp_path, check=check, netlist_only=True) == tmp_path
+    assert len(calls) == count
+    assert len({directory for directory, *_ in calls}) == count
+    for directory, params, options in calls:
+        assert options["check"] == check and options["netlist_only"]
+        assert params.view == ("hdl21gen" if target.startswith("hdl21") else "frida65a")
+        if "transfer_curve" in target:
+            assert params.conversions == 151
+            assert params.vin_diff == hs.LinearSweep(start=-0.75, stop=0.75, step=0.01)
+            assert not options.get("noise", False)
+        else:
+            assert params.conversions == (1 if check else 100)
+            assert float(params.vin_diff.dc) == 0.05
+        if "supply_noise" in target:
+            assert params.supply_series_resistance_ohm == 1.0
+            assert params.supply_series_inductance_h == 1e-9
+            assert params.supply_decoupling_capacitance_f == 1e-12
+            assert params.supply_noise_bandwidth_hz == 25e9
+            assert set(params.supply_noise_rms_v) <= {0.0, 1e-3}
+            # Preserve the original supply recipe; do not enable device noise
+            # as an incidental effect of consolidating the executors.
+            assert not options.get("noise", False)
+        elif "fixed_input_noise" in target:
+            assert options["noise"] is True
+    if "vs_rate" in target:
+        assert {float(params.symbol_rate) for _, params, _ in calls} == {320e6, 960e6, 1.6e9}
+
+
+@pytest.fixture
+def captured_executor(monkeypatch):
+    from types import SimpleNamespace
+
+    from vlsirtools.spice import spectre
+
+    from flow.analysis import io
+    from flow.circuit import results
+    from pdk import tsmc65
+    from pdk.tsmc65 import site
+
+    captured = {}
+    monkeypatch.setattr(h.pdk, "set_default", lambda *_: None)
+    monkeypatch.setattr(h.pdk, "compile", lambda *_: None)
+    monkeypatch.setattr(tsmc65, "pdk_logic", object())
+    monkeypatch.setattr(
+        site,
+        "install",
+        SimpleNamespace(
+            include=lambda *_: h.Literal("models"),
+            include_pre_simulation=lambda: h.Literal("pre"),
+        ),
+    )
+    monkeypatch.setattr(
+        results,
+        "adc_signal_names",
+        lambda *args, **kwargs: {
+            "time_s": "time",
+            "comp": "xtop.comp_out",
+            "internal": "xtop.xadc.internal",
+        },
+    )
+    monkeypatch.setattr(
+        results, "convert_spectre_adc_to_measurement", lambda *args, **kwargs: captured.update(converted=kwargs)
+    )
+    monkeypatch.setattr(io, "write_measurement", lambda path, value: captured.update(hdf5=path))
+
+    def build(**kwargs):
+        captured.update(kwargs)
+
+        def run(options):
+            captured["options"] = options
+            return {sim.AnalysisType.TRAN: SimpleNamespace(data={})}
+
+        return SimpleNamespace(run=run)
+
+    monkeypatch.setattr(hs, "Sim", build)
+    monkeypatch.setattr(hs, "to_proto", lambda *_: "proto")
+
+    class Backend:
+        def __init__(self, proto, options):
+            captured.update(proto=proto, options=options)
+
+        def setup(self):
+            captured["setup"] = True
+
+        def write_netlist(self):
+            captured["netlist"] = True
+
+    monkeypatch.setattr(spectre, "SpectreSim", Backend)
+    return captured
+
+
+@pytest.fixture
+def pex_input(tmp_path):
+    pex = tmp_path / "frida2_2layer_radix17.pex.netlist"
+    ports = " ".join(port.name for port in Frida2PexAdc.port_list)
+    pex.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
+    (tmp_path / "signoff_summary.json").write_text(
         json.dumps(
             {
-                "lvs_correct": False,
-                "pex_netlist": "/different/worker/adc.pex.netlist",
-                "warnings": ["expected LVS mismatch: disconnected historical MOM layer"],
+                "lvs_correct": True,
+                "pex_netlist": str(pex),
+                "warnings": [],
             }
         )
     )
-    if accepted:
-        assert sim._find_latest_signed_off_pex(target) == run / "adc.pex.netlist"
+    return pex
+
+
+@pytest.mark.parametrize("view,threads", (("hdl21gen", 8), ("frida2", 8), ("frida65a", 6)))
+@pytest.mark.parametrize("check", (False, True))
+@pytest.mark.parametrize("netlist_only", (False, True))
+def test_single_executor_modes(view, threads, check, netlist_only, captured_executor, pex_input, tmp_path):
+    if view == "frida65a":
+        ports = " ".join(port.name for port in Frida1PexAdc.port_list)
+        pex_input.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
+    params = sim.AdcTbParams(
+        view=view,
+        pex_cell="" if view == "hdl21gen" else "adc_12b_17step",
+        conversions=100,
+    )
+    root = tmp_path / "run"
+    sim._run_adc_sim(
+        root,
+        params,
+        pex_netlist=None if view == "hdl21gen" else pex_input,
+        noise=True,
+        check=check,
+        netlist_only=netlist_only,
+    )
+    captured = captured_executor
+    tran = next(attr for attr in captured["attrs"] if isinstance(attr, hs.Tran))
+    assert tran.noise == (not check)
+    assert float(tran.tstop) == pytest.approx(100e-9 if check else 16e-6)
+    assert float(tran.options["strobeperiod"]) == pytest.approx(39.0625e-12)
+    if not check:
+        assert tran.options["noisefmax"].text == "25G"
+        assert float(tran.options["noiseseed"]) == 1
+    assert f"+mt={threads}" in captured["options"].simulator_args
+    assert ("-ahdllint=warn" in captured["options"].simulator_args) == check
+    assert captured["options"].rundir == root
+    literals = "\n".join(attr.text for attr in captured["attrs"] if isinstance(attr, h.Literal))
+    assert ("check_setuphold" in literals) == check
+    assert ("simulator lang=spice" in literals) == (view == "hdl21gen")
+    assert captured.get("netlist", False) == netlist_only
+    assert ("converted" in captured) == (not check and not netlist_only)
+    metadata = json.loads((root / "input.json").read_text())
+    assert metadata["spectre_threads"] == threads
+    assert metadata["transient_noise"] == (not check)
+    if view != "hdl21gen":
+        import hashlib
+
+        assert metadata["pex_sha256"] == hashlib.sha256(pex_input.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("check", (False, True))
+def test_transfer_executor_preserves_strobes_and_waveform_limit(check, captured_executor, tmp_path):
+    params = sim.AdcTbParams(
+        conversions=151,
+        vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
+    )
+    sim._run_adc_sim(tmp_path / "run", params, check=check, maximum_waveform_records=3)
+    tran = next(attr for attr in captured_executor["attrs"] if isinstance(attr, hs.Tran))
+    assert not tran.noise
+    assert float(tran.options["strobeperiod"]) == pytest.approx(50e-12)
+    assert float(tran.tstop) == pytest.approx(100e-9 if check else 151 * 160e-9)
+    if not check:
+        assert captured_executor["converted"]["maximum_waveform_records"] == 3
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    (
+        ("ports", "PEX port order differs"),
+        ("nodes", "PEX waveform nodes missing"),
+        ("header", "missing PEX subcircuit"),
+        ("lvs", "unaccepted LVS result"),
+        ("wrong_file", "PEX input differs"),
+    ),
+)
+def test_executor_rejects_bad_pex(fault, message, captured_executor, pex_input, tmp_path):
+    if fault == "ports":
+        pex_input.write_text(pex_input.read_text().replace("vdd_a vin_p", "vin_p vdd_a"))
+    elif fault == "nodes":
+        pex_input.write_text(pex_input.read_text().replace("\ninternal\n", "\n"))
+    elif fault == "header":
+        pex_input.write_text("subckt other ()\nends other\n")
     else:
-        with pytest.raises(FileNotFoundError):
-            sim._find_latest_signed_off_pex(target)
+        summary = json.loads((tmp_path / "signoff_summary.json").read_text())
+        if fault == "lvs":
+            summary["lvs_correct"] = False
+        else:
+            summary["pex_netlist"] = "wrong.pex.netlist"
+        (tmp_path / "signoff_summary.json").write_text(json.dumps(summary))
+    with pytest.raises(ValueError, match=message):
+        sim._run_adc_sim(
+            tmp_path / "run",
+            sim.AdcTbParams(view="frida2", pex_cell="adc_12b_17step"),
+            pex_netlist=pex_input,
+            netlist_only=True,
+        )
+    assert "netlist" not in captured_executor
 
 
-def test_adc_main_owns_the_eleven_named_targets() -> None:
-    source = inspect.getsource(sim.main)
-    for name in (
-        "frida_1_noise_vs_rate_check",
-        "frida_1_noise_vs_rate",
-        "frida_1_supply_noise_vs_rate",
-        "frida_1_transfer_curve_check",
-        "frida_1_transfer_curve",
-        "frida2_2layer_radix17_10msps",
-        "frida2_3layer_radix17_10msps",
-        "hdl21gen_noise_vs_rate_check",
-        "hdl21gen_noise_vs_rate",
-        "hdl21gen_transfer_curve_check",
-        "hdl21gen_transfer_curve",
-    ):
-        assert name in source
-    assert "build/sim" not in source
+@pytest.mark.parametrize(
+    "view,target,warning,accepted",
+    (
+        ("frida65a", "frida1_2layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", True),
+        ("frida65a", "frida1_2layer_radix20", "expected LVS mismatch: disconnected historical MOM layer", True),
+        ("frida65a", "frida1_1layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", False),
+        ("frida2", "frida2_2layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", False),
+        ("frida65a", "frida1_2layer_radix17", "unrelated mismatch", False),
+    ),
+)
+def test_historical_lvs_exception_is_narrow(view, target, warning, accepted, captured_executor, pex_input, tmp_path):
+    renamed = pex_input.with_name(f"{target}.pex.netlist")
+    pex_input.rename(renamed)
+    if view == "frida65a":
+        ports = " ".join(port.name for port in Frida1PexAdc.port_list)
+        renamed.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
+    (tmp_path / "signoff_summary.json").write_text(
+        json.dumps(
+            {
+                "lvs_correct": False,
+                "pex_netlist": f"/worker/{renamed.name}",
+                "warnings": [warning],
+            }
+        )
+    )
+    kwargs = {"pex_netlist": renamed, "expected_disconnect": True, "netlist_only": True}
+    params = sim.AdcTbParams(view=view, pex_cell="adc_12b_17step")
+    if accepted:
+        sim._run_adc_sim(tmp_path / "run", params, **kwargs)
+        assert captured_executor["netlist"]
+    else:
+        with pytest.raises(ValueError, match="unaccepted LVS"):
+            sim._run_adc_sim(tmp_path / "run", params, **kwargs)
+
+
+def test_adc_main_lists_only_experiment_targets_in_family_order(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["sim"])
+    sim.main()
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        "  hdl21_fixed_input_noise_vs_rate",
+        "  hdl21_transfer_curve",
+        "  frida1_fixed_input_noise",
+        "  frida1_fixed_input_noise_vs_rate",
+        "  frida1_transfer_curve",
+        "  frida1_supply_noise_vs_rate",
+        "  frida2_fixed_input_noise",
+    ]
+    functions = [
+        name
+        for name, value in vars(sim).items()
+        if inspect.isfunction(value) and value.__module__ == sim.__name__ and name.startswith("_")
+    ]
+    assert functions == ["_run_adc_sim"]
+
+
+@pytest.mark.parametrize("check,netlist_only", ((False, False), (True, False), (False, True), (True, True)))
+def test_main_forwards_execution_modes(check, netlist_only, tmp_path, monkeypatch):
+    calls = []
+
+    def frida2_fixed_input_noise(directory, **options):
+        calls.append((directory, options))
+
+    monkeypatch.setattr(sim, "frida2_fixed_input_noise", frida2_fixed_input_noise)
+    monkeypatch.setattr(sim, "__file__", str(tmp_path / "flow/adc/sim.py"))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "sim",
+            "frida2_fixed_input_noise",
+            *(["--check"] if check else []),
+            *(["--netlist-only"] if netlist_only else []),
+        ],
+    )
+    sim.main()
+    directory, options = calls[0]
+    assert directory.parent == tmp_path / "build/sim/adc/frida2_fixed_input_noise"
+    assert directory.is_dir()
+    assert options == {"check": check, "netlist_only": netlist_only}
