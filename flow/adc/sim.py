@@ -5,7 +5,9 @@ import hashlib
 import json
 import math
 import re
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+from multiprocessing import get_context
 from pathlib import Path
 from typing import cast
 
@@ -714,6 +716,8 @@ def _run_extracted_adc_noise(
 
     if not pex_netlist.is_file():
         raise FileNotFoundError(pex_netlist)
+    # Fixed family budgets: four FRIDA-1 jobs or three FRIDA-2 jobs per worker.
+    spectre_threads = 6 if cases[0][1].view == "frida65a" else 8
     from flow.analysis.io import write_measurement
     from flow.circuit.results import adc_signal_names, convert_spectre_adc_to_measurement
     from pdk import tsmc65
@@ -789,7 +793,15 @@ def _run_extracted_adc_noise(
                 simulator=SupportedSimulators.SPECTRE,
                 fmt=ResultFormat.SIM_DATA,
                 rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=4", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
+                simulator_args=(
+                    "+preset=mx",
+                    f"+mt={spectre_threads}",
+                    "+lqtimeout",
+                    "3600",
+                    "+escchars",
+                    "+log",
+                    "spectre.log",
+                ),
             ),
         ),
     )
@@ -1100,8 +1112,9 @@ def frida2_3layer_radix17_10msps(run_dir: Path, *, netlist_only: bool = False) -
 
 
 def frida1_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run 100 conversions for each freshly extracted FRIDA-1 flavor."""
+    """Run four FRIDA-1 flavors concurrently: 100 conversions, six threads each."""
 
+    jobs = []
     for target, weights in (
         ("frida1_1layer_radix17", (768, 512, 320, 192, 96, 64, 32, 24, 12, 10, 5, 4, 4, 2, 1, 1)),
         ("frida1_1layer_radix20", (768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1)),
@@ -1127,18 +1140,26 @@ def frida1_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
                     "pex_netlist": str(pex),
                     "pex_sha256": hashlib.sha256(pex.read_bytes()).hexdigest(),
                     "expected_historical_disconnect": "2layer" in target,
+                    "spectre_threads": 6,
                 },
                 indent=2,
             )
             + "\n"
         )
-        _run_extracted_adc_noise(case_dir, ((target, params),), pex, netlist_only=netlist_only)
+        jobs.append((case_dir, ((target, params),), pex))
+    # Four six-thread simulations use 24 of a Juno/Jupiter worker's 28 cores.
+    # Spawn isolates HDL21/PDK caches and writes each HDF5 as its case finishes.
+    with ProcessPoolExecutor(max_workers=len(jobs), mp_context=get_context("spawn")) as executor:
+        futures = [executor.submit(_run_extracted_adc_noise, *job, netlist_only=netlist_only) for job in jobs]
+        for future in futures:
+            future.result()
     return run_dir
 
 
 def frida2_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
-    """Run 100 conversions for each connected radix-17 FRIDA-2 stack."""
+    """Run three FRIDA-2 stacks concurrently: 100 conversions, eight threads each."""
 
+    jobs = []
     params = AdcTbParams(
         view="frida2",
         pex_cell="adc_12b_17step",
@@ -1159,12 +1180,18 @@ def frida2_10msps(run_dir: Path, *, netlist_only: bool = False) -> Path:
                     "pex_netlist": str(pex),
                     "pex_sha256": hashlib.sha256(pex.read_bytes()).hexdigest(),
                     "expected_historical_disconnect": False,
+                    "spectre_threads": 8,
                 },
                 indent=2,
             )
             + "\n"
         )
-        _run_extracted_adc_noise(case_dir, ((target, params),), pex, netlist_only=netlist_only)
+        jobs.append((case_dir, ((target, params),), pex))
+    # Three eight-thread simulations use the same 24-core worker budget.
+    with ProcessPoolExecutor(max_workers=len(jobs), mp_context=get_context("spawn")) as executor:
+        futures = [executor.submit(_run_extracted_adc_noise, *job, netlist_only=netlist_only) for job in jobs]
+        for future in futures:
+            future.result()
     return run_dir
 
 

@@ -2,8 +2,10 @@
 
 import inspect
 import json
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
+from threading import Barrier
 
 import hdl21 as h
 import hdl21.sim as hs
@@ -218,30 +220,66 @@ def test_extracted_noise_runner_enables_transient_noise() -> None:
 
 
 @pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
-def test_hundred_conversion_campaigns(family, count, tmp_path, monkeypatch):
+@pytest.mark.parametrize("netlist_only", (False, True))
+def test_hundred_conversion_campaigns(family, count, netlist_only, tmp_path, monkeypatch):
     calls = []
+    started = Barrier(count)
     pex = tmp_path / "input.pex.netlist"
     pex.write_text("test input")
     monkeypatch.setattr(sim, "_find_latest_signed_off_pex", lambda target: pex)
 
+    def pool(*, max_workers, mp_context):
+        assert max_workers == count
+        assert mp_context.get_start_method() == "spawn"
+        # Threads keep the mock visible; the barrier requires every flavor to
+        # enter before any can finish. A serialized runner fails this test.
+        return ThreadPoolExecutor(max_workers=max_workers)
+
     def capture(run_dir, cases, netlist, *, netlist_only=False):
         calls.append((run_dir, cases[0], netlist, netlist_only))
+        started.wait(timeout=10)
         return run_dir
 
+    monkeypatch.setattr(sim, "ProcessPoolExecutor", pool)
     monkeypatch.setattr(sim, "_run_extracted_adc_noise", capture)
-    getattr(sim, f"{family}_10msps")(tmp_path / "preflight", netlist_only=True)
+    getattr(sim, f"{family}_10msps")(tmp_path / "campaign", netlist_only=netlist_only)
     assert len(calls) == count
     assert len({name for _, (name, _), _, _ in calls}) == count
+    assert sum(json.loads((directory / "input.json").read_text())["spectre_threads"] for directory, *_ in calls) == 24
     for directory, (name, params), netlist, preflight in calls:
         assert directory.name == name
+        assert directory.parent == tmp_path / "campaign"
+        assert json.loads((directory / "input.json").read_text())["spectre_threads"] == (8 if family == "frida2" else 6)
         assert params.conversions == 100
         assert params.pex_cell == "adc_12b_17step"
         assert params.view == ("frida2" if family == "frida2" else "frida65a")
         assert float(params.symbol_rate) == 1.6e9
         assert float(params.vin_diff.dc) == 0.05
         assert float(params.vin_cm.dc) == pytest.approx(0.7)
-        assert netlist == pex and preflight
+        assert netlist == pex and preflight == netlist_only
         assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in name else 2047)
+
+
+@pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
+def test_concurrent_campaign_propagates_case_failure(family, count, tmp_path, monkeypatch):
+    pex = tmp_path / "input.pex.netlist"
+    pex.write_text("test input")
+    calls = []
+    monkeypatch.setattr(sim, "_find_latest_signed_off_pex", lambda target: pex)
+    monkeypatch.setattr(
+        sim, "ProcessPoolExecutor", lambda **kwargs: ThreadPoolExecutor(max_workers=kwargs["max_workers"])
+    )
+
+    def fail_one(run_dir, *_args, **_kwargs):
+        calls.append(run_dir.name)
+        if "1layer_radix17" in run_dir.name:
+            raise RuntimeError("simulator failed")
+        return run_dir
+
+    monkeypatch.setattr(sim, "_run_extracted_adc_noise", fail_one)
+    with pytest.raises(RuntimeError, match="simulator failed"):
+        getattr(sim, f"{family}_10msps")(tmp_path / "campaign")
+    assert len(calls) == count
 
 
 @pytest.mark.parametrize("target,accepted", (("frida1_2layer_radix17", True), ("frida2_2layer_radix17", False)))

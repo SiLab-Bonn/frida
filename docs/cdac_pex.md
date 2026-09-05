@@ -37,6 +37,15 @@ are stored in HDF5 `wave/internal_v/`; the existing plotter-facing traces stay
 in `wave/`. `info/readbacks/signal_map_json` records their exact PEX node names.
 No initial-state voltages or physical connections are changed by renaming.
 
+The `frida1_10msps` and `frida2_10msps` family runners launch independent
+flavors concurrently, with separate spawned Python processes for HDL21/PDK
+state isolation and one named output subdirectory per flavor. FRIDA-1 uses
+four six-thread Spectre jobs; FRIDA-2 uses three eight-thread jobs. Both
+budgets total 24 compute threads on a 28-physical-core worker. Input manifests
+record the per-case thread count. Netlist-only preflights exercise the same
+process scheduling, and a failed case propagates failure to the family runner.
+These are explicit runner budgets, not dynamic license/CPU allocation.
+
 ## Shared HDL21 source (2026-09-05)
 
 `flow.cdac.subckt.CdacArray` now generates both the ideal and LVS capacitor
