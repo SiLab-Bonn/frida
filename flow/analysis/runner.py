@@ -605,7 +605,10 @@ def adc_pex_flavor_paths(output_dir: Path, *, inputs: Path | None = None) -> tup
         )
         sampling = analyze_adc_sampling_noise(measurement)
         sampling_analyses.append(sampling)
-        label = path.parent.name.replace("frida", "FRIDA-").replace("layer", "L").replace("radix", "R")
+        label = path.parent.name
+        if label in ("original", "extended_comp", "continuous_100ns"):
+            label = f"{path.parent.parent.name}_{label}"
+        label = label.replace("frida", "FRIDA-").replace("layer", "L").replace("radix", "R")
         sampling_labels.append(f"{label.replace('_', ' ')}\n{input_mv:g} mV, {active_rate_msps:g} MS/s active")
         sampling_rows.extend(
             (str(path.relative_to(meas_read_dir)), int(index), start, stop, vp, vn, vp - vn, vin)

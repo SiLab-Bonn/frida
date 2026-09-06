@@ -7,6 +7,7 @@ import math
 import re
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+from itertools import product
 from multiprocessing import get_context
 from pathlib import Path
 from typing import cast
@@ -573,15 +574,30 @@ def hdl21_transfer_curve(run_dir: Path, *, check: bool = False) -> Path:
 
 
 def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
-    """Run four historical flavors with the same six-slot COMP/one-slot LOGIC experiment as FRIDA-2."""
+    """Compare three timing recipes on four historical flavors, 100 conversions per case."""
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
     with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as executor:
         futures = []
         for layers in (1, 2):
-            for radix, cdac in (
-                (17, CdacParams()),
-                (20, CdacParams(weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1))),
+            for (radix, cdac), (timing, comp, logic) in product(
+                (
+                    (17, CdacParams()),
+                    (20, CdacParams(weights=(768, 512, 320, 192, 128, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1))),
+                ),
+                (
+                    ("original", AdcTbParams().seq_comp_pattern, AdcTbParams().seq_logic_pattern),
+                    (
+                        "extended_comp",
+                        "0" * 36 + "11111100" * 17 + "0" * 84,
+                        "00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
+                    ),
+                    (
+                        "continuous_100ns",
+                        "0" * 28 + "11111100" * 16 + "1111",
+                        "0001" + "0" * 24 + "00000010" * 16 + "0000",
+                    ),
+                ),
             ):
                 target = f"frida1_{layers}layer_radix{radix}"
                 pex = root / target / "20260905_171235" / f"{target}.pex.netlist"
@@ -592,14 +608,20 @@ def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
                     symbol_rate=1.6 * G,
                     conversions=1 if check else 100,
                     vin_diff=h.Vdc.Params(dc=0.05),
-                    seq_comp_pattern="0" * 36 + "11111100" * 17 + "0" * 84,
-                    seq_logic_pattern="00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
-                    seq_logic_phase_delay_symbols=2.0,
+                    seq_comp_pattern=comp,
+                    seq_logic_pattern=logic,
+                    seq_logic_phase_delay_symbols=0.0 if timing == "continuous_100ns" else 2.0,
+                    seq_init_pattern="1111" + "0" * 156
+                    if timing == "continuous_100ns"
+                    else AdcTbParams().seq_init_pattern,
+                    seq_samp_pattern="0000" + "1" * 24 + "0" * 132
+                    if timing == "continuous_100ns"
+                    else AdcTbParams().seq_samp_pattern,
                 )
                 futures.append(
                     executor.submit(
                         _run_adc_sim,
-                        run_dir / target,
+                        run_dir / target / timing,
                         params,
                         pex_netlist=pex,
                         noise=True,
@@ -720,18 +742,35 @@ def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False) -> Path:
 
 
 def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
-    """Run three radix-17 stacks with COMP reset aligned to the one-slot LOGIC pulse.
+    """Compare three timing recipes on three radix-17 stacks, 100 conversions per case.
 
     Keep sampling, COMP rising edges, and LOGIC rising edges unchanged from
-    the September 5 campaign. Six of eight slots now evaluate; LOGIC is high
+    the September 5 campaign. In extended_comp, six of eight slots evaluate; LOGIC is high
     for the first reset slot and low one slot before the next comparison.
     Edges coincide at the sequencer, not necessarily at the internal clocks.
+    continuous_100ns instead uses 15 ns sampling and a shorter final COMP pulse
+    to fit back-to-back conversions, as in adc_sequencer_timing_100ns.tex.
     """
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
     with ProcessPoolExecutor(max_workers=3, mp_context=get_context("spawn")) as executor:
         futures = []
-        for layers, stamp in ((1, "20260905_193440"), (2, "20260905_193629"), (3, "20260905_193816")):
+        for (layers, stamp), (timing, comp, logic) in product(
+            ((1, "20260905_193440"), (2, "20260905_193629"), (3, "20260905_193816")),
+            (
+                ("original", AdcTbParams().seq_comp_pattern, AdcTbParams().seq_logic_pattern),
+                (
+                    "extended_comp",
+                    "0" * 36 + "11111100" * 17 + "0" * 84,
+                    "00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
+                ),
+                (
+                    "continuous_100ns",
+                    "0" * 28 + "11111100" * 16 + "1111",
+                    "0001" + "0" * 24 + "00000010" * 16 + "0000",
+                ),
+            ),
+        ):
             target = f"frida2_{layers}layer_radix17"
             params = AdcTbParams(
                 view="frida2",
@@ -740,14 +779,18 @@ def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
                 symbol_rate=1.6 * G,
                 conversions=1 if check else 100,
                 vin_diff=h.Vdc.Params(dc=0.05),
-                seq_comp_pattern="0" * 36 + "11111100" * 17 + "0" * 84,
-                seq_logic_pattern="00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
-                seq_logic_phase_delay_symbols=2.0,
+                seq_comp_pattern=comp,
+                seq_logic_pattern=logic,
+                seq_logic_phase_delay_symbols=0.0 if timing == "continuous_100ns" else 2.0,
+                seq_init_pattern="1111" + "0" * 156 if timing == "continuous_100ns" else AdcTbParams().seq_init_pattern,
+                seq_samp_pattern="0000" + "1" * 24 + "0" * 132
+                if timing == "continuous_100ns"
+                else AdcTbParams().seq_samp_pattern,
             )
             futures.append(
                 executor.submit(
                     _run_adc_sim,
-                    run_dir / target,
+                    run_dir / target / timing,
                     params,
                     pex_netlist=root / target / stamp / f"{target}.pex.netlist",
                     noise=True,

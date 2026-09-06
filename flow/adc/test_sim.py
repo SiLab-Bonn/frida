@@ -171,34 +171,60 @@ def test_fixed_input_campaigns(family, count, check, tmp_path, monkeypatch):
     monkeypatch.setattr(sim, "_run_adc_sim", capture)
     root = tmp_path / "campaign"
     assert getattr(sim, f"{family}_fixed_input_noise")(root, check=check) == root
-    assert len(calls) == count
-    assert len({directory.name for directory, *_ in calls}) == count
+    assert len(calls) == 3 * count
+    assert len({directory for directory, *_ in calls}) == 3 * count
+    assert len({directory.parent.name for directory, *_ in calls}) == count
+    assert {directory.name for directory, *_ in calls} == {"original", "extended_comp", "continuous_100ns"}
     for directory, params, options in calls:
-        assert directory.parent == root
+        flavor = directory.parent.name
+        assert directory.parent.parent == root
         assert params.conversions == (1 if check else 100)
         assert params.pex_cell == "adc_12b_17step"
         assert params.view == ("frida2" if family == "frida2" else "frida1")
         assert float(params.symbol_rate) == 1.6e9
+        assert float(params.seq_logic_phase_delay_symbols) == (0.0 if directory.name == "continuous_100ns" else 2.0)
         assert float(params.vin_diff.dc) == 0.05
         assert float(params.vin_cm.dc) == pytest.approx(0.7)
         assert options["check"] == check
         assert options["noise"] is True
-        assert options["pex_netlist"].name == f"{directory.name}.pex.netlist"
+        assert options["pex_netlist"].name == f"{flavor}.pex.netlist"
         assert options["pex_netlist"].parent.name.startswith("20260905_")
-        assert options.get("expected_disconnect", False) == (family == "frida1" and "2layer" in directory.name)
-        assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in directory.name else 2047)
+        assert options.get("expected_disconnect", False) == (family == "frida1" and "2layer" in flavor)
+        assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in flavor else 2047)
         comp = np.array([int(bit) for bit in params.seq_comp_pattern])
         logic = np.roll([int(bit) for bit in params.seq_logic_pattern], int(params.seq_logic_phase_delay_symbols))
         comp_rises = np.flatnonzero(np.diff(comp) == 1) + 1
-        comp_falls = np.flatnonzero(np.diff(comp) == -1) + 1
+        comp_falls = np.flatnonzero(np.diff(np.r_[comp, 0]) == -1) + 1
         logic_rises = (np.flatnonzero(np.diff(logic) == 1) + 1)[1:]
         logic_falls = (np.flatnonzero(np.diff(logic) == -1) + 1)[1:]
+        if directory.name == "continuous_100ns":
+            assert len(comp) == len(logic) == len(params.seq_init_pattern) == len(params.seq_samp_pattern) == 160
+            assert len(comp) / float(params.symbol_rate) == pytest.approx(100e-9)
+            np.testing.assert_array_equal(comp_rises, 28 + 8 * np.arange(17))
+            np.testing.assert_array_equal(comp_falls, np.r_[comp_rises[:-1] + 6, 160])
+            np.testing.assert_array_equal(logic_rises, comp_rises[:-1] + 6)
+            np.testing.assert_array_equal(logic_falls, logic_rises + 1)
+            np.testing.assert_array_equal(np.flatnonzero(logic[:28]), [3])
+            np.testing.assert_array_equal(np.flatnonzero([int(bit) for bit in params.seq_init_pattern]), np.arange(4))
+            np.testing.assert_array_equal(
+                np.flatnonzero([int(bit) for bit in params.seq_samp_pattern]), np.arange(4, 28)
+            )
+            # Exercise the generator's validation with the shorter whole-word record.
+            assert sim.AdcTb(params).name.startswith(f"AdcTb_{family}(")
+            continue
         assert len(comp) == len(logic) == len(params.seq_init_pattern) == 256
         np.testing.assert_array_equal(comp_rises, 36 + 8 * np.arange(17))
-        np.testing.assert_array_equal(comp_falls, comp_rises + 6)
-        np.testing.assert_array_equal(logic_rises, comp_falls[:-1])
-        np.testing.assert_array_equal(logic_falls, logic_rises + 1)
-        np.testing.assert_array_equal(comp_rises[1:] - logic_falls, np.ones(16))
+        np.testing.assert_array_equal(logic_rises, comp_rises[:-1] + 6)
+        if directory.name == "original":
+            assert params.seq_comp_pattern == sim.AdcTbParams().seq_comp_pattern
+            assert params.seq_logic_pattern == sim.AdcTbParams().seq_logic_pattern
+            np.testing.assert_array_equal(comp_falls, comp_rises + 4)
+            np.testing.assert_array_equal(logic_falls, logic_rises + 4)
+        else:
+            np.testing.assert_array_equal(comp_falls, comp_rises + 6)
+            np.testing.assert_array_equal(logic_rises, comp_falls[:-1])
+            np.testing.assert_array_equal(logic_falls, logic_rises + 1)
+            np.testing.assert_array_equal(comp_rises[1:] - logic_falls, np.ones(16))
         assert params.seq_samp_pattern == sim.AdcTbParams().seq_samp_pattern
         assert params.seq_init_pattern == sim.AdcTbParams().seq_init_pattern
 
@@ -211,15 +237,15 @@ def test_concurrent_campaign_propagates_case_failure(family, count, tmp_path, mo
     )
 
     def fail_one(directory, *_args, **_kwargs):
-        calls.append(directory.name)
-        if "1layer_radix17" in directory.name:
+        calls.append(directory)
+        if "1layer_radix17" in directory.parent.name:
             raise RuntimeError("simulator failed")
         return directory
 
     monkeypatch.setattr(sim, "_run_adc_sim", fail_one)
     with pytest.raises(RuntimeError, match="simulator failed"):
         getattr(sim, f"{family}_fixed_input_noise")(tmp_path)
-    assert len(calls) == count
+    assert len(calls) == 3 * count
 
 
 @pytest.mark.parametrize(

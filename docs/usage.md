@@ -338,8 +338,14 @@ uv run python -m flow.adc.sim frida2_fixed_input_noise
 uv run python -m flow.analysis.runner adc_pex_flavor_paths --inputs /path/to/completed/campaign
 ```
 
-The current FRIDA-1 and FRIDA-2 fixed-input recipes test extended comparator evaluation:
-relative to each COMP rising edge, its eight 0.625 ns slots are:
+Both fixed-input targets sweep three timing recipes, writing each result beneath
+`<flavor>/original/`, `<flavor>/extended_comp/`, or `<flavor>/continuous_100ns/`.
+That is twelve FRIDA-1 cases and nine FRIDA-2 cases, each with 100 conversions. The worker limits remain
+four and three respectively; extra cases queue within the same 24-thread
+budget. Diagnostics (`check=True`) cover all three recipes too.
+
+`original` retains the September 5 timing. `extended_comp` tests extended
+comparator evaluation: relative to each COMP rising edge, its eight 0.625 ns slots are:
 
 ```text
 COMP   11111100
@@ -354,6 +360,19 @@ setting, not timing signoff: internal clock skew, decision capture, minimum
 pulse widths, comparator reset recovery and DAC settling still need checking.
 Other targets retain their existing timing. `input.json` records
 all four sequence patterns and phase offsets for each new run.
+
+`continuous_100ns` follows `docs/images/adc_sequencer_timing_100ns.tex`, with
+time measured from INIT rising: INIT is high at 0--2.5 ns; its initialization
+LOGIC pulse is at 1.875--2.5 ns; SAMP is high at 2.5--17.5 ns. COMP rises at
+17.5 + 5k ns for k = 0..16. B0--B15 evaluate for 3.75 ns, followed by a
+0.625 ns LOGIC update; B16 evaluates for only 2.5 ns and resets at 100 ns,
+coincident with the next INIT rising edge. There is no B16 DAC-update pulse.
+All four sequences repeat after 160 symbols / 100 ns, so this is true 10 MS/s
+throughput (10 us for 100 conversions), rather than the other recipes' padded
+160 ns records. The decoder bounds B16's inferred capture deadline at the next
+INIT or end of the recording and samples at 98% of that final interval.
+It does not model a separate physical output-capture register. Verify capture,
+clock skew, and first-record startup in simulation before accepting this timing.
 
 For every completed flavor, this analysis writes the 17-bit/12-bit code list,
 the all-conversion decision-path density, and C0/C7/C15 settling

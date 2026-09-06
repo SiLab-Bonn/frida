@@ -681,6 +681,22 @@ def test_adc_pex_flavor_runners_use_h5_flavors_and_rates(
         rate_msps * 160e6 for _flavor in flavors for rate_msps in (10, 2, 6)
     ]
 
+    # All timing recipes retain the flavor in labels and artifact filenames.
+    timing_dir = tmp_path / "timing_campaign"
+    for timing in ("original", "extended_comp", "continuous_100ns"):
+        path = timing_dir / "frida2_3layer_radix17" / timing / "result.h5"
+        path.parent.mkdir(parents=True)
+        path.touch()
+        measurements[path] = next(iter(measurements.values()))
+    artifacts = runner.adc_pex_flavor_paths(tmp_path / "timing_output", inputs=timing_dir)
+    assert len(artifacts) == len(set(artifacts)) == 12
+    assert all("FRIDA-2 3L R17" in label for label in sampling_outputs[-1][1])
+    assert {label.split("\n")[0] for label in sampling_outputs[-1][1]} == {
+        "FRIDA-2 3L R17 original",
+        "FRIDA-2 3L R17 extended comp",
+        "FRIDA-2 3L R17 continuous 100ns",
+    }
+
 
 def test_adc_noise_vs_comp_time_runner_uses_configured_adc_subset(
     tmp_path: Path,
