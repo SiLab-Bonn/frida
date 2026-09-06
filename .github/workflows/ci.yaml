@@ -131,6 +131,7 @@ jobs:
           flow/samp/test_sim.py
           flow/cdac/test_sim.py
           flow/circuit/test_sim.py
+          flow/circuit/test_remote.py
           flow/circuit/test_spectre.py
           flow/scans/test_plldrp.py
           test/test_adc_capdriver.py

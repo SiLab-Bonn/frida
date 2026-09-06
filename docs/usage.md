@@ -360,6 +360,76 @@ uses all 100 decision records and writes both B0-first 17-bit decisions and
 decoded 12-bit outputs. Run long campaigns in detached worker sessions and
 copy results back before selecting them for analysis.
 
+## Remote simulation CLI
+
+`flow.circuit.remote` wraps SSH, rsync, and tmux; the existing simulation targets
+still define the experiments and their concurrency. FTD host/path conventions
+are documented at the top of that module, not fixed in its configuration.
+Start from the primary checkout on asiclab003 and check capacity first:
+
+```bash
+uv run python -m flow.circuit.remote status --host juno \
+  --setup /eda/local/scripts/cadence_2024-25.sh
+```
+
+This shows CPU topology/load, memory, busy processes, and the issued/in-use
+counts for `Virtuoso_Multi_mode_Simulation` and `Spectre_XPS`. Repeat
+`--license-feature NAME` to inspect different FlexNet features. These are shared
+license pools, not reservations. The server comes from the worker environment's
+`CDS_LIC_FILE` or `LM_LICENSE_FILE`, or an explicit `--license-server` override.
+Review other users' load and the runner's
+multicore license needs before launching; the tool does not allocate resources.
+
+After committing the source and submodule changes, launch an existing target:
+
+```bash
+uv run python -m flow.circuit.remote launch frida2_fixed_input_noise \
+  --host juno --work-root /local/kcaisley \
+  --setup /eda/local/scripts/cadence_2024-25.sh \
+  --input build/layout/adc/frida2_1layer_radix17/20260905_193440 \
+  --input build/layout/adc/frida2_2layer_radix17/20260905_193629 \
+  --input build/layout/adc/frida2_3layer_radix17/20260905_193816 \
+  --analysis adc_pex_flavor_paths
+```
+
+Use `frida1_fixed_input_noise` with `--host jupiter` and its four reviewed input
+directories for the historical campaign. Input paths must match those selected
+inside the target; the CLI never substitutes newer PEX files. `--block` defaults
+to `adc`; use `comp`, `samp`, or `cdac` for other runners. Omit `--analysis` when
+automatic ADC analysis is not wanted. The selected PDK submodule defaults to
+`tsmc65`; foundry installations and absolute site inputs are not copied and
+must already be accessible on the trusted worker. No PDK data goes to public CI.
+
+The worker parent directory must already exist. Each launch creates a fresh
+snapshot there from clean tracked source, dependencies, `uv.lock`, and explicit
+build inputs, without a `.git` directory, virtual environment, or old results.
+The remote tmux session installs from the lockfile, runs focused unit tests and
+the selected Spectre diagnostic, then launches the normal simulation CLI.
+Skipped diagnostics, missing inputs, and simulator/license errors prevent the
+full run. Existing Spectre processes owned by the same user also stop preflight;
+other users' resource use needs the manual review above.
+
+The printed local `build/remote/<session>/` directory contains the revision and
+input-path manifest, file list, and one shell bootstrap, not campaign-specific
+Python scripts. Its detached local tmux collector checks every 30 minutes. Once
+the entire target exits, it copies raw results, HDF5, diagnostics, and logs into
+`results/`, including failed-run artifacts. Successful runs optionally invoke
+the existing analysis CLI; `analysis.log` records its output directory.
+`collected.json` records worker and final exit codes. A failed analysis can be
+rerun directly with the analysis CLI against `results/`.
+
+Collection can also be resumed explicitly if the local collector was lost:
+
+```bash
+uv run python -m flow.circuit.remote collect build/remote/<session> --watch
+```
+
+Without `--watch`, this checks once and copies if finished. Transport failures
+are retried in watch mode; simulations are never automatically restarted and
+remote snapshots are never deleted. Leave both machines powered on. Use tmux
+and the worker's `build/remote/run.log` for live progress; `collector.log` records
+local collection progress. Historical one-off recovery scripts are not used.
+
 ## Environment setup
 
 Clone with submodules, create the environment, and run the software checks:
