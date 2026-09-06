@@ -134,6 +134,48 @@ def test_adc_waveform_conversion_writes_shared_hdf5(tmp_path: Path) -> None:
     assert measurement.wave.internal_v["comp_latch_p_v"].shape == measurement.wave.comp_out_v.shape
 
 
+def test_adc_continuous_records_capture_short_final_decision(tmp_path: Path) -> None:
+    """Do not sample B16 in the next conversion or count the terminal INIT edge."""
+    params = AdcTbParams(
+        conversions=2,
+        symbol_rate=1.6e9,
+        seq_init_pattern="1111" + "0" * 156,
+        seq_samp_pattern="0000" + "1" * 24 + "0" * 132,
+        seq_comp_pattern="0" * 28 + "11111100" * 16 + "1111",
+        seq_logic_pattern="0001" + "0" * 24 + "00000010" * 16 + "0000",
+    )
+    ticks = np.arange(16_001)
+    times_s = ticks * 12.5e-12
+    raw_names = {
+        field.name
+        for field in dataclasses.fields(AdcIntWave)
+        if field.name not in {"conversion_index", "time_s", "vin_diff_v", "internal_v"}
+    }
+    values = {name: np.zeros_like(times_s) for name in raw_names}
+    values["time_s"] = times_s
+    for name in ("init", "samp", "comp", "logic"):
+        pattern = np.array([int(bit) for bit in getattr(params, f"seq_{name}_pattern")])
+        values[f"seq_{name}_v"] = 1.2 * pattern[(ticks // 50) % 160]
+    # B16 only resolves late in its shortened evaluation. Its output changes
+    # after reset, before the old extrapolated 101.175 ns capture point.
+    for offset in (0, 8_000):
+        values["comp_out_v"][(ticks >= offset + 7_994) & (ticks < offset + 8_020)] = 1.2
+    raw_path = tmp_path / "netlist.raw"
+    raw_path.touch()
+    measurement = convert_spectre_adc_to_measurement(
+        values,
+        params=params,
+        raw_path=raw_path,
+        signal_names={name: name for name in values},
+    )
+    assert measurement.param.conversions == 2
+    np.testing.assert_array_equal(measurement.daq.bout[:, :16], np.zeros((2, 16)))
+    np.testing.assert_array_equal(measurement.daq.bout[:, 16], [1, 1])
+    np.testing.assert_array_equal(measurement.wave.conversion_index, [0, 1])
+    assert measurement.wave.comp_out_v.shape == (2, 4_000)
+    assert measurement.wave.time_s[-1] < 100e-9
+
+
 def test_comp_waveform_conversion_writes_shared_hdf5(tmp_path: Path) -> None:
     params = CompTbParams(
         comp=CompParams(diffpair_w=31),

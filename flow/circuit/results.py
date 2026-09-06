@@ -193,6 +193,9 @@ def convert_spectre_adc_to_measurement(
         high = signals[name] > threshold_v
         edge_indices[name] = np.flatnonzero(high & np.concatenate((np.asarray([True]), ~high[:-1])))
     conversion_start_indices = edge_indices["seq_init_v"]
+    # A repeating INIT can rise on the final recorded point; that is the next
+    # conversion's boundary, not an additional conversion to decode.
+    conversion_start_indices = conversion_start_indices[times_s[conversion_start_indices] < times_s[-1]]
     if len(conversion_start_indices) == 0:
         raise ValueError("Spectre result contains no SEQ_INIT rising edge")
 
@@ -229,7 +232,13 @@ def convert_spectre_adc_to_measurement(
         comp_times = times_s[comp_edges]
         logic_times = times_s[matched_logic_edges]
         final_interval_s = float(np.median(logic_times - comp_times[:-1]))
-        logic_times_by_conversion.append(np.concatenate((logic_times, [comp_times[-1] + final_interval_s])))
+        # B16 has no LOGIC update. Its inferred capture deadline must not cross
+        # the next INIT / end of the record, even when its COMP pulse is shorter.
+        final_deadline_s = min(
+            comp_times[-1] + final_interval_s,
+            times_s[stop_index] if stop_index < len(times_s) else times_s[-1],
+        )
+        logic_times_by_conversion.append(np.concatenate((logic_times, [final_deadline_s])))
 
     comp_edge_indices = np.stack(comp_edges_by_conversion)
     comp_edge_times_s = times_s[comp_edge_indices]
