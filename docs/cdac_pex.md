@@ -1,5 +1,54 @@
 # Caparray capacitance comparison
 
+## Held sampling-noise comparison (2026-09-06)
+
+The seven completed September 5 runs are collected beneath
+`build/sim/adc/comparison/20260905_194921/results/`. Their executed transient
+statements all contain `isnoisy=yes`, `noisefmin=62500`, `noisefmax=25G`, and
+`noiseseed=1`. Each contains 100 conversions at 50 mV differential input and
+700 mV common mode, with 100 ns active conversion timing and 160 ns records.
+
+The existing `adc_pex_flavor_paths` analysis now includes a held-level
+histogram. Its clock-derived averaging window is approximately
+20.52–22.02 ns: both sampling switches are off, and the first comparator edge
+is later. Each conversion contributes one averaged `VDAC_P - VDAC_N` value.
+The sample SD uses `ddof=1`; histogram centering removes each design's own
+DC offset, which is retained separately in the CSV. Averaging suppresses
+fast ongoing noise, so this is not total comparator-input or output-code noise.
+
+| Design | PEX total VDAC load per side (fF) | Held differential SD (µV) | First DAC correction (mV) |
+|---|---:|---:|---:|
+| FRIDA-1 1L R17 | 527.7 | 116.9 | 222.10 |
+| FRIDA-1 1L R20 | 527.7 | 127.2 | 222.09 |
+| FRIDA-1 disconnected 2L R17 | 499.7 | 109.9 | 234.65 |
+| FRIDA-1 disconnected 2L R20 | 499.6 | 102.7 | 234.65 |
+| FRIDA-2 1L R17 | 500.3 | 112.5 | 255.35 |
+| FRIDA-2 2L R17 | 847.5 | 83.3 | 285.47 |
+| FRIDA-2 3L R17 | 1209.8 | 81.5 | 297.02 |
+
+Load is the P/N average of the full-ADC extraction's total node capacitance,
+including shunt loading, not `main - diff`. Totals use the coupling/total
+ratios in `coupling_capacitance.report`, consistent with the less precise
+`netsummary.report`. The roughly 0.8 pF effective switched term for the new
+three-layer design must not be substituted for its roughly 1.21 pF total
+sampling-node load. Floating nodes and transistor capacitances also prevent
+treating this total as an exact scalar sampling-noise model.
+
+The correction column is the mean differential change between 22.4 and
+27.4 ns, spanning the first DAC update. It supports reduced attenuation in
+the three-layer design, but is not a measured full-scale transfer range.
+A wider input range makes each 12-bit LSB larger in volts: unchanged µV noise
+would then look smaller in LSB. Here held-voltage SD itself also decreases,
+by about 30% versus FRIDA-1 1L R17 and 26% versus FRIDA-1 2L R17. The roughly
+2% difference between the new two- and three-layer SD estimates is too small
+to claim a resolved advantage from these 100-sample runs. Final code spread
+also includes comparator/conversion noise, quantization and local code-width
+effects; converting it to input µV needs a separately calibrated transfer gain.
+
+Outputs are in `build/analysis/adc/20260906_112220/`:
+`adc_sampling_noise.pdf`, `adc_sampling_noise.csv`, and
+`adc_sampling_levels.csv`. No new simulations were needed.
+
 ## C0-first full-ADC restart (2026-09-05)
 
 The FRIDA-2 runners now read the paired `build/frida-2-template-c0.gds` and

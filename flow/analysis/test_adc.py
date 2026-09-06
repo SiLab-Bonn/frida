@@ -23,6 +23,7 @@ from flow.analysis.adc import (
     analyze_adc_nonlinearity,
     analyze_adc_power_sweep,
     analyze_adc_ramp,
+    analyze_adc_sampling_noise,
     analyze_adc_transfer,
     analyze_scope_wave_to_bits,
     combine_adc_noise_comparison,
@@ -41,6 +42,75 @@ from flow.analysis.types import (
 )
 from flow.cdac import CdacParams
 from flow.scans.params import AdcScanParams
+
+
+def adc_sampling_measurement() -> MeasAdcInt:
+    """Three held samples with known differential spread and common fast ripple."""
+    from dataclasses import fields
+
+    template = adc_measurement([0, 0, 0], internal=True, sample_rate_hz=1e8, waveform_sample_count=101)
+    assert isinstance(template, MeasAdcInt)
+    wave = template.wave
+    repeated = {
+        field.name: np.repeat(values, 3, axis=0)
+        for field in fields(wave)
+        if isinstance(values := getattr(wave, field.name), np.ndarray) and values.ndim == 2
+    }
+    sample = np.tile(np.where(wave.time_s < 2e-9, 1.2, 0.0), (3, 1))
+    comp = np.tile(np.where(wave.time_s < 5e-9, 0.0, 1.2), (3, 1))
+    ripple = 1e-3 * np.sin(wave.time_s * 2e9 * np.pi)
+    repeated.update(
+        seq_samp_v=sample,
+        seq_comp_v=comp,
+        clk_comp_v=comp,
+        clk_samp_p_v=sample,
+        clk_samp_n_v=sample,
+        clk_samp_p_b_v=1.2 - sample,
+        clk_samp_n_b_v=1.2 - sample,
+        vin_p_v=np.full_like(sample, 0.725),
+        vin_n_v=np.full_like(sample, 0.675),
+        vdac_p_v=0.725 + np.array([-1e-4, 0, 1e-4])[:, None] + ripple,
+        vdac_n_v=np.full_like(sample, 0.675),
+    )
+    return replace(template, wave=replace(wave, conversion_index=np.arange(3), **repeated))
+
+
+def test_sampling_noise_uses_one_held_level_per_conversion() -> None:
+    measurement = adc_sampling_measurement()
+    analysis = analyze_adc_sampling_noise(measurement)
+    assert analysis.sigma_v == pytest.approx(100e-6)
+    assert len(analysis.held_diff_v) == 3
+    assert np.all(analysis.window_start_s > 2e-9)
+    assert np.all(analysis.window_stop_s < 5e-9)
+    explicit = analyze_adc_sampling_noise(measurement, window_s=(3e-9, 4e-9))
+    assert explicit.sigma_v == pytest.approx(100e-6)
+    assert np.all(explicit.window_start_s == 3e-9)
+
+
+@pytest.mark.parametrize("window", [(0.0, 1e-9), (4e-9, 6e-9), (4e-9, 3e-9), (float("nan"), 4e-9)])
+def test_sampling_noise_rejects_invalid_windows(window) -> None:
+    with pytest.raises(ValueError, match="window"):
+        analyze_adc_sampling_noise(adc_sampling_measurement(), window_s=window)
+
+
+@pytest.mark.parametrize("signal", ["clk_samp_p_v", "clk_samp_n_v", "clk_samp_p_b_v", "clk_samp_n_b_v"])
+def test_sampling_noise_requires_both_switches_off(signal) -> None:
+    measurement = adc_sampling_measurement()
+    enabled = np.full_like(measurement.wave.vdac_p_v, 0.0 if "_b_" in signal else 1.2)
+    with pytest.raises(ValueError, match="enabled sampling switch"):
+        analyze_adc_sampling_noise(replace(measurement, wave=replace(measurement.wave, **{signal: enabled})))
+
+
+def test_sampling_noise_rejects_changing_input_and_missing_clocks() -> None:
+    measurement = adc_sampling_measurement()
+    with pytest.raises(ValueError, match="fixed differential input"):
+        analyze_adc_sampling_noise(
+            replace(measurement, wave=replace(measurement.wave, vin_p_v=measurement.wave.vdac_p_v))
+        )
+    with pytest.raises(ValueError, match="clock edges"):
+        analyze_adc_sampling_noise(
+            replace(measurement, wave=replace(measurement.wave, clk_comp_v=np.zeros_like(measurement.wave.clk_comp_v)))
+        )
 
 
 def adc_measurement(
@@ -211,7 +281,10 @@ def adc_cdac_settling_measurement() -> MeasAdcInt:
         }
     )
     wave = AdcIntWave(
-        internal_v={},
+        internal_v={
+            "comp_latch_p_v": (1.2 - 0.5 * seq_comp_v)[None, :],
+            "comp_latch_n_v": (1.2 - 0.8 * seq_comp_v)[None, :],
+        },
         conversion_index=np.asarray([0]),
         time_s=time_s,
         **wave_values,
@@ -579,6 +652,10 @@ def test_decision_paths_select_matching_output_codes() -> None:
 def test_cdac_settling_aligns_saved_stages_and_removes_static_levels() -> None:
     measurement = adc_cdac_settling_measurement()
     result = analyze_adc_cdac_settling(measurement)
+    assert result.comp_latch_p_v is not None
+    assert result.comp_latch_n_v is not None
+    np.testing.assert_allclose(result.comp_latch_p_v, 1.2 - 0.5 * result.clk_comp_v)
+    np.testing.assert_allclose(result.comp_latch_n_v, 1.2 - 0.8 * result.clk_comp_v)
 
     assert result.stage_index.tolist() == [0, 7, 15]
     assert result.cycle_index.tolist() == [0, 7, 15]

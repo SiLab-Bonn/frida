@@ -85,6 +85,37 @@ from flow.scans.scan_cdac import _build_cdac_params
 from flow.scans.scan_comp import _build_comp_params
 
 
+def test_sampling_noise_histogram_has_common_voltage_bins_and_axes(tmp_path, monkeypatch) -> None:
+    from flow.analysis.adc import analyze_adc_sampling_noise
+    from flow.analysis.test_adc import adc_sampling_measurement
+
+    analysis = analyze_adc_sampling_noise(adc_sampling_measurement())
+    shifted = replace(analysis, held_p_v=analysis.held_p_v + 0.01)
+    captured = []
+
+    def capture(fig, output_path):
+        captured.append(fig)
+        return (output_path.with_suffix(".pdf"),)
+
+    monkeypatch.setattr(analysis_plots, "save_figure", capture)
+    analysis_plots.plot_adc_sampling_noise(
+        [analysis, shifted, analysis, analysis, analysis, analysis, analysis],
+        labels=[f"Design {index}" for index in range(7)],
+        output_path=tmp_path / "sampling",
+    )
+    fig = captured[0]
+    axes = [ax for ax in fig.axes if ax.get_visible()]
+    assert len(axes) == 7
+    assert len({ax.get_xlim() for ax in axes}) == len({ax.get_ylim() for ax in axes}) == 1
+    for ax in axes:
+        assert sum(patch.get_height() for patch in ax.patches) == pytest.approx(1.0)
+        assert all(patch.get_width() == pytest.approx(25.0) for patch in ax.patches)
+    assert [patch.get_height() for patch in axes[0].patches] == [patch.get_height() for patch in axes[1].patches]
+    assert "µV" in fig._supxlabel.get_text()
+    assert "LSB" not in fig._supxlabel.get_text()
+    plt.close(fig)
+
+
 def assert_plot_formats(paths: tuple[Path, ...]) -> None:
     assert tuple(path.suffix for path in paths) == (".png", ".svg", ".pdf")
     for path in paths:
@@ -210,7 +241,7 @@ def test_waveform_plot_uses_typed_signal_names_and_scaled_time(tmp_path: Path) -
     assert "LOGIC offset:" not in svg
 
 
-def test_cdac_settling_plot_separates_saved_bit_cycles_and_uses_millivolts(tmp_path: Path) -> None:
+def test_cdac_settling_plot_separates_saved_bit_cycles_and_uses_millivolts(tmp_path: Path, monkeypatch) -> None:
     measurement = adc_cdac_settling_measurement()
     measurement = replace(
         measurement,
@@ -221,6 +252,18 @@ def test_cdac_settling_plot_separates_saved_bit_cycles_and_uses_millivolts(tmp_p
         ),
     )
     analysis = replace(analyze_adc_cdac_settling(measurement), active_conversion_rate_hz=10e6)
+    save = analysis_plots.save_figure
+
+    def check_dotted_nodes(fig, output_path):
+        for column, ax in enumerate(fig.axes[:3]):
+            dotted = [line for line in ax.lines if line.get_linestyle() == ":"]
+            assert [line.get_color() for line in dotted] == [NORD_BLUE, NORD_ORANGE]
+            assert analysis.comp_latch_p_v is not None and analysis.comp_latch_n_v is not None
+            np.testing.assert_allclose(dotted[0].get_ydata(), analysis.comp_latch_p_v[column])
+            np.testing.assert_allclose(dotted[1].get_ydata(), analysis.comp_latch_n_v[column])
+        return save(fig, output_path)
+
+    monkeypatch.setattr(analysis_plots, "save_figure", check_dotted_nodes)
 
     paths = plot_adc_cdac_settling(
         measurement,
@@ -234,6 +277,8 @@ def test_cdac_settling_plot_separates_saved_bit_cycles_and_uses_millivolts(tmp_p
     assert "C7 (cycle 7)" in svg
     assert "C15 (cycle 15)" in svg
     assert "VDAC residual (mV)" in svg
+    assert "internal_p" in svg
+    assert "internal_n" in svg
     for label in (
         "clk_comp",
         "out_p",

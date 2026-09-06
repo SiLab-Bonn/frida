@@ -36,6 +36,7 @@ from flow.analysis.adc import (
     analyze_adc_power_sweep,
     analyze_adc_power_waveform,
     analyze_adc_ramp,
+    analyze_adc_sampling_noise,
     analyze_adc_transfer,
     combine_adc_noise_comparison,
 )
@@ -65,6 +66,7 @@ from flow.analysis.plots import (
     plot_adc_ramp_nonlinearity,
     plot_adc_ramp_transfer,
     plot_adc_ramp_weights,
+    plot_adc_sampling_noise,
     plot_adc_transfer,
     plot_cdac_cap_mismatch,
     plot_cdac_cap_mismatch_comparison,
@@ -557,7 +559,7 @@ def adc_noise_density_grid(output_dir: Path) -> tuple[Path, ...]:
 
 
 def adc_pex_flavor_paths(output_dir: Path, *, inputs: Path | None = None) -> tuple[Path, ...]:
-    """Plot extracted-ADC trajectories from an explicitly selected completed campaign."""
+    """Plot trajectories, settling, and held sampling noise for completed PEX flavors."""
 
     meas_read_dir = inputs or BASE_PATH / "build/sim/adc/frida65a_noise_vs_rate/20260827_165917"
     paths = sorted(meas_read_dir.rglob("result.h5"))
@@ -565,6 +567,10 @@ def adc_pex_flavor_paths(output_dir: Path, *, inputs: Path | None = None) -> tup
         raise FileNotFoundError(f"no completed HDF5 results beneath {meas_read_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     artifacts = []
+    sampling_analyses = []
+    sampling_labels = []
+    sampling_rows = []
+    sampling_summary = []
     for path in paths:
         measurement = read_measurement(path)
         if not isinstance(measurement, MeasAdcInt):
@@ -590,6 +596,83 @@ def adc_pex_flavor_paths(output_dir: Path, *, inputs: Path | None = None) -> tup
                 / f"spice_{flavor}_{input_mv:g}mv_{active_rate_msps:g}msps_decision_path_density",
             )
         )
+        artifacts.extend(
+            plot_adc_cdac_settling(
+                measurement,
+                analyze_adc_cdac_settling(measurement),
+                output_path=output_dir / f"spice_{flavor}_{input_mv:g}mv_{active_rate_msps:g}msps_cdac_settling",
+            )
+        )
+        sampling = analyze_adc_sampling_noise(measurement)
+        sampling_analyses.append(sampling)
+        label = path.parent.name.replace("frida", "FRIDA-").replace("layer", "L").replace("radix", "R")
+        sampling_labels.append(f"{label.replace('_', ' ')}\n{input_mv:g} mV, {active_rate_msps:g} MS/s active")
+        sampling_rows.extend(
+            (str(path.relative_to(meas_read_dir)), int(index), start, stop, vp, vn, vp - vn, vin)
+            for index, start, stop, vp, vn, vin in zip(
+                sampling.conversion_index,
+                sampling.window_start_s,
+                sampling.window_stop_s,
+                sampling.held_p_v,
+                sampling.held_n_v,
+                sampling.input_diff_v,
+                strict=True,
+            )
+        )
+        sampling_summary.append(
+            (
+                str(path.relative_to(meas_read_dir)),
+                len(sampling.conversion_index),
+                float(np.mean(sampling.held_diff_v)) * 1e3,
+                sampling.sigma_v * 1e6,
+                float(np.mean(sampling.held_diff_v - sampling.input_diff_v)) * 1e6,
+                float(np.min(sampling.window_start_s)) * 1e9,
+                float(np.max(sampling.window_stop_s)) * 1e9,
+            )
+        )
+    sampling_order = sorted(range(len(sampling_labels)), key=sampling_labels.__getitem__)
+    artifacts.extend(
+        plot_adc_sampling_noise(
+            [sampling_analyses[index] for index in sampling_order],
+            labels=[sampling_labels[index] for index in sampling_order],
+            output_path=output_dir / "adc_sampling_noise",
+        )
+    )
+    for filename, header, rows in (
+        (
+            "adc_sampling_levels.csv",
+            (
+                "source_h5",
+                "conversion",
+                "window_start_s",
+                "window_stop_s",
+                "held_p_v",
+                "held_n_v",
+                "held_diff_v",
+                "input_diff_v",
+            ),
+            sampling_rows,
+        ),
+        (
+            "adc_sampling_noise.csv",
+            (
+                "source_h5",
+                "conversions",
+                "held_mean_mv",
+                "held_sd_uv",
+                "mean_offset_uv",
+                "earliest_window_start_ns",
+                "latest_window_stop_ns",
+            ),
+            sampling_summary,
+        ),
+    ):
+        destination = output_dir / filename
+        with destination.open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(header)
+            writer.writerows(rows)
+        artifacts.append(destination)
     return tuple(artifacts)
 
 

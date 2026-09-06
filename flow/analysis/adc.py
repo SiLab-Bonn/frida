@@ -29,6 +29,7 @@ from flow.analysis.types import (
     AnalysisAdcPowerWaveform,
     AnalysisAdcRamp,
     AnalysisAdcRampCurve,
+    AnalysisAdcSamplingNoise,
     AnalysisAdcScopeBits,
     AnalysisAdcTransfer,
     MeasAdc,
@@ -888,6 +889,67 @@ def analyze_adc_decision_paths(
     )
 
 
+def analyze_adc_sampling_noise(
+    measurement: MeasAdcInt, *, window_s: tuple[float, float] | None = None
+) -> AnalysisAdcSamplingNoise:
+    """Measure fixed-input held differential levels, one observation per conversion.
+
+    By default average the middle 60% of the interval between the sequencer's
+    sample falling edge and first comparator rising edge. An explicit window
+    uses conversion-relative seconds. Verify the actual P/N transmission gates
+    are off and no comparator decision has started. Reject changing inputs.
+    Centering belongs to plotting; retain the DC offset in the result. This
+    average filters fast ongoing noise and must not be called total ADC noise.
+    """
+
+    wave = measurement.wave
+    threshold = 0.5 * float(measurement.param.vdd_d.dc)
+    if window_s is not None and (not np.all(np.isfinite(window_s)) or window_s[0] >= window_s[1]):
+        raise ValueError("sampling window must have finite, increasing bounds")
+    starts, stops, held_p, held_n, inputs = [], [], [], [], []
+    for row in range(len(wave.conversion_index)):
+        sample_edges = find_crossings(wave.seq_samp_v[row], wave.time_s, threshold, rising=False)
+        comp_edges = find_crossings(wave.seq_comp_v[row], wave.time_s, threshold, rising=True)
+        actual_comp = find_crossings(wave.clk_comp_v[row], wave.time_s, threshold, rising=True)
+        if not len(sample_edges) or not len(comp_edges) or not len(actual_comp):
+            raise ValueError("sampling noise requires sample and comparator clock edges")
+        start, stop = window_s or (
+            sample_edges[0] + 0.2 * (comp_edges[0] - sample_edges[0]),
+            sample_edges[0] + 0.8 * (comp_edges[0] - sample_edges[0]),
+        )
+        selected = (wave.time_s >= start) & (wave.time_s <= stop)
+        if (
+            start <= sample_edges[0]
+            or stop >= actual_comp[0]
+            or start < wave.time_s[0]
+            or stop > wave.time_s[-1]
+            or np.count_nonzero(selected) < 2
+        ):
+            raise ValueError("sampling window must lie after sampling and before the first decision")
+        if any(np.any(values[row, selected] >= threshold) for values in (wave.clk_samp_p_v, wave.clk_samp_n_v)) or any(
+            np.any(values[row, selected] <= threshold) for values in (wave.clk_samp_p_b_v, wave.clk_samp_n_b_v)
+        ):
+            raise ValueError("sampling window overlaps an enabled sampling switch")
+        input_trace = wave.vin_p_v[row, selected] - wave.vin_n_v[row, selected]
+        if np.ptp(input_trace) > 1e-9:
+            raise ValueError("sampling noise analysis requires a fixed differential input")
+        starts.append(start)
+        stops.append(stop)
+        held_p.append(np.mean(wave.vdac_p_v[row, selected]))
+        held_n.append(np.mean(wave.vdac_n_v[row, selected]))
+        inputs.append(np.mean(input_trace))
+    if np.ptp(inputs) > 1e-9:
+        raise ValueError("sampling noise analysis requires the same input across conversions")
+    return AnalysisAdcSamplingNoise(
+        conversion_index=wave.conversion_index,
+        window_start_s=np.asarray(starts),
+        window_stop_s=np.asarray(stops),
+        held_p_v=np.asarray(held_p),
+        held_n_v=np.asarray(held_n),
+        input_diff_v=np.asarray(inputs),
+    )
+
+
 def analyze_adc_cdac_settling(measurement: MeasAdcInt) -> AnalysisAdcCdacSettling:
     """Align representative early, middle, and late C0-first CDAC stages."""
 
@@ -955,6 +1017,8 @@ def analyze_adc_cdac_settling(measurement: MeasAdcInt) -> AnalysisAdcCdacSettlin
     }
     static_vdac_p_v = []
     static_vdac_n_v = []
+    internal_names = tuple(name for name in ("comp_latch_p_v", "comp_latch_n_v") if name in wave.internal_v)
+    aligned.update({name: [] for name in internal_names})
     for (
         record_index,
         conversion_index,
@@ -982,6 +1046,8 @@ def analyze_adc_cdac_settling(measurement: MeasAdcInt) -> AnalysisAdcCdacSettlin
         static_vdac_n_v.append(n_static_v)
         for name in ("clk_comp_v", "comp_out_p_v", "comp_out_n_v", "seq_logic_v"):
             aligned[name].append(np.interp(sample_time_s, time_s, getattr(wave, name)[record_index]))
+        for name in internal_names:
+            aligned[name].append(np.interp(sample_time_s, time_s, wave.internal_v[name][record_index]))
         for side in ("p", "n"):
             for signal in ("dac_state", "dac_botplate"):
                 aligned[f"{signal}_{side}_v"].append(

@@ -1848,6 +1848,45 @@ class AnalysisAdcPowerWaveform:
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisAdcSamplingNoise:
+    """One held P/N voltage estimate per conversion, before the first decision.
+
+    Window averaging suppresses fast ongoing noise: this is a held-level
+    repeatability measurement, not source-isolated kT/C or final code noise.
+    """
+
+    conversion_index: IntArray
+    window_start_s: FloatArray
+    window_stop_s: FloatArray
+    held_p_v: FloatArray
+    held_n_v: FloatArray
+    input_diff_v: FloatArray
+
+    def __post_init__(self) -> None:
+        arrays = {
+            name: _array_1d(getattr(self, name), np.float64, name, finite=True)
+            for name in ("window_start_s", "window_stop_s", "held_p_v", "held_n_v", "input_diff_v")
+        }
+        indices = _array_1d(self.conversion_index, np.int64, "conversion_index")
+        count = _aligned_length({"conversion_index": indices, **arrays})
+        if count < 2 or len(np.unique(indices)) != count or np.any(indices < 0):
+            raise ValueError("sampling noise requires at least two distinct conversions")
+        if np.any(arrays["window_start_s"] >= arrays["window_stop_s"]):
+            raise ValueError("sampling noise windows must have positive duration")
+        for name, array in arrays.items():
+            object.__setattr__(self, name, array)
+        object.__setattr__(self, "conversion_index", indices)
+
+    @property
+    def held_diff_v(self) -> FloatArray:
+        return self.held_p_v - self.held_n_v
+
+    @property
+    def sigma_v(self) -> float:
+        return float(np.std(self.held_diff_v, ddof=1))
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisAdcCdacSettling:
     """Aligned representative C0-first SAR stages and CDAC settling."""
 
@@ -1868,6 +1907,8 @@ class AnalysisAdcCdacSettling:
     vdac_n_settling_error_v: FloatArray
     static_vdac_p_v: FloatArray
     static_vdac_n_v: FloatArray
+    comp_latch_p_v: FloatArray | None = None
+    comp_latch_n_v: FloatArray | None = None
 
     def __post_init__(self) -> None:
         stage_index = _array_1d(self.stage_index, np.int64, "stage_index")
@@ -1902,6 +1943,12 @@ class AnalysisAdcCdacSettling:
             }
         )
         expected_shape = (trace_count, len(time_s))
+        for name in ("comp_latch_p_v", "comp_latch_n_v"):
+            if (values := getattr(self, name)) is not None:
+                values = _array_2d(values, np.float64, name, finite=True)
+                if values.shape != expected_shape:
+                    raise ValueError(f"{name} must align with ADC CDAC settling waveforms")
+                object.__setattr__(self, name, values)
         if trace_count == 0 or len(time_s) < 2 or any(values.shape != expected_shape for values in waveforms.values()):
             raise ValueError("ADC CDAC settling waveforms must be populated and aligned")
         if (

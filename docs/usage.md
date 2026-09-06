@@ -338,6 +338,27 @@ uv run python -m flow.adc.sim frida2_fixed_input_noise
 uv run python -m flow.analysis.runner adc_pex_flavor_paths --inputs /path/to/completed/campaign
 ```
 
+For every completed flavor, this analysis writes the 17-bit/12-bit code list,
+the all-conversion decision-path density, and C0/C7/C15 settling
+plots showing comparator outputs, DAC states/drivers, and top-plate residuals
+over all conversions. It reads existing HDF5 results; no simulation is rerun.
+In the comparator row, solid blue/orange traces are the buffered P/N outputs;
+dotted blue/orange traces are the internal cross-coupled regenerative nodes
+when those signals were saved.
+
+The same target also writes `adc_sampling_noise.pdf`, comparing held
+differential voltages with common 25 µV bins and shared axes, plus
+`adc_sampling_noise.csv` (sample SD, mean and offset) and
+`adc_sampling_levels.csv` (one held level and averaging window per conversion).
+It averages the middle 60% of the interval between the sequencer's sample-off
+and first comparator edges, verifying both sampling switches are off and the
+actual comparator has not fired. This requires fixed-input waveforms and at
+least two saved conversions. Each histogram is centered on its own mean;
+the offset is retained in the CSV. Window averaging suppresses fast ongoing
+noise, so this measures held-level repeatability, not source-isolated kT/C,
+instantaneous comparator-input noise, or final output-code noise. Values stay
+in volts/µV: converting to LSB requires a separately measured input-code gain.
+
 Worker preflight uses these diagnostic tests: it checks the actual extracted
 port order and internal waveform nodes, generates the complete input, and runs
 short Spectre diagnostics. Require passing tests, not skipped prerequisites,

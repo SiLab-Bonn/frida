@@ -36,6 +36,7 @@ from flow.analysis.types import (
     AnalysisAdcPowerSweep,
     AnalysisAdcPowerWaveform,
     AnalysisAdcRamp,
+    AnalysisAdcSamplingNoise,
     AnalysisAdcScopeBits,
     AnalysisAdcTransfer,
     AnalysisCdacCapMismatch,
@@ -765,6 +766,51 @@ def plot_adc_ramp_nonlinearity(
 
 
 @mpl.rc_context(PLOT_STYLE)
+def plot_adc_sampling_noise(
+    analyses: Sequence[AnalysisAdcSamplingNoise],
+    *,
+    labels: Sequence[str],
+    output_path: Path,
+) -> tuple[Path, ...]:
+    """Compare mean-centered held voltages using common microvolt bins and axes."""
+
+    if not analyses or len(analyses) != len(labels):
+        raise ValueError("sampling noise requires one label per analysis")
+    errors_uv = [(item.held_diff_v - np.mean(item.held_diff_v)) * 1e6 for item in analyses]
+    limit_uv = max(25.0, np.ceil(max(np.max(np.abs(values)) for values in errors_uv) / 25.0) * 25.0)
+    bins_uv = np.arange(-limit_uv, limit_uv + 25.0, 25.0)
+    columns = min(4, len(analyses))
+    rows = (len(analyses) + columns - 1) // columns
+    fig, axes = plt.subplots(rows, columns, sharex=True, sharey=True, squeeze=False)
+    if rows > 2:
+        fig.set_size_inches(9.6, 2.7 * rows)
+    for index, (analysis, label, error_uv) in enumerate(zip(analyses, labels, errors_uv, strict=True)):
+        ax = axes.flat[index]
+        ax.hist(
+            error_uv,
+            bins=bins_uv,
+            weights=np.full(len(error_uv), 1.0 / len(error_uv)),
+            color=CURVE_COLORS[index % len(CURVE_COLORS)],
+            edgecolor=SPINE_COLOR,
+            linewidth=0.4,
+            alpha=0.85,
+        )
+        ax.set_title(label, fontsize=9)
+        ax.set_xlim(-limit_uv, limit_uv)
+        ax.xaxis.set_major_locator(MaxNLocator(5))
+        if index + columns >= len(analyses):
+            ax.tick_params(labelbottom=True)
+        style_grid(ax)
+        style_info_box(ax, (f"SD = {analysis.sigma_v * 1e6:.1f} µV", f"N = {len(error_uv)}"))
+    for ax in axes.flat[len(analyses) :]:
+        ax.set_visible(False)
+    fig.supxlabel("Held VDAC_P − VDAC_N, relative to each design's mean (µV)")
+    fig.supylabel("Fraction of conversions per 25 µV bin")
+    fig.suptitle("Held sampling-level noise · before the first comparator decision")
+    return save_figure(fig, output_path)
+
+
+@mpl.rc_context(PLOT_STYLE)
 def plot_adc_code_distribution(
     msmt_list: Sequence[MeasAdc],
     analysis: AnalysisAdcCodeDistribution,
@@ -1357,7 +1403,7 @@ def plot_adc_cdac_settling(
     *,
     output_path: Path,
 ) -> tuple[Path, ...]:
-    """Plot early, middle, and late representative CDAC-update intervals."""
+    """Plot CDAC-update intervals, with saved regenerative nodes dotted."""
 
     time_scale, time_unit = style_time_units(analysis.time_s)
     fig, axes = plt.subplots(
@@ -1379,6 +1425,10 @@ def plot_adc_cdac_settling(
             comparator_ax.plot(scaled_time, values, color=NORD_BLUE, alpha=0.35)
         for values in analysis.comp_out_n_v[selected]:
             comparator_ax.plot(scaled_time, values, color=NORD_ORANGE, alpha=0.35)
+        for name, color in (("comp_latch_p_v", NORD_BLUE), ("comp_latch_n_v", NORD_ORANGE)):
+            if (internal := getattr(analysis, name)) is not None:
+                for values in internal[selected]:
+                    comparator_ax.plot(scaled_time, values, color=color, linestyle=":", alpha=0.35)
 
         drive_ax.plot(scaled_time, analysis.seq_logic_v[selected][0], color=NORD_DARK)
         for values in analysis.dac_state_p_v[selected]:
@@ -1413,9 +1463,17 @@ def plot_adc_cdac_settling(
             Line2D((), (), color=NORD_DARK, label="clk_comp"),
             Line2D((), (), color=NORD_BLUE, label="out_p"),
             Line2D((), (), color=NORD_ORANGE, label="out_n"),
+            *(
+                Line2D((), (), color=color, linestyle=":", label=label)
+                for name, color, label in (
+                    ("comp_latch_p_v", NORD_BLUE, "internal_p"),
+                    ("comp_latch_n_v", NORD_ORANGE, "internal_n"),
+                )
+                if getattr(analysis, name) is not None
+            ),
         ),
         loc="lower left",
-        ncols=1,
+        ncols=2,
         fontsize=INFO_BOX_FONT_SIZE,
     )
     axes[1, 0].legend(

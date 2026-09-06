@@ -631,16 +631,6 @@ def test_adc_pex_flavor_runners_use_h5_flavors_and_rates(
     monkeypatch.setattr(runner, "analyze_adc_decision_paths", analyze_paths)
     monkeypatch.setattr(runner, "plot_adc_decision_path_density", plot_paths)
 
-    artifacts = runner.adc_pex_flavor_paths(tmp_path / "output")
-
-    assert len(artifacts) == 24
-    assert selections == ["all"] * 12
-    assert outputs == [
-        f"spice_{flavor}_{rate_msps}msps_cm700mv_dc50mv_50mv_{rate_msps}msps_decision_path_density"
-        for flavor in flavors
-        for rate_msps in (10, 2, 6)
-    ]
-
     settling_outputs = []
 
     def analyze_settling(measurement):
@@ -650,8 +640,36 @@ def test_adc_pex_flavor_runners_use_h5_flavors_and_rates(
         settling_outputs.append((measurement, analysis, output_path.name))
         return (output_path.with_suffix(".pdf"),)
 
+    from flow.analysis.test_adc import adc_sampling_measurement
+
+    sampling_outputs = []
+    sampling_analysis = runner.analyze_adc_sampling_noise(adc_sampling_measurement())
+
+    def plot_sampling(analyses, *, labels, output_path):
+        sampling_outputs.append((len(analyses), labels))
+        return (output_path.with_suffix(".pdf"),)
+
+    monkeypatch.setattr(runner, "plot_waveforms", lambda *args, **kwargs: pytest.fail("no generic key-node plot"))
+    monkeypatch.setattr(runner, "analyze_adc_sampling_noise", lambda _: sampling_analysis)
+    monkeypatch.setattr(runner, "plot_adc_sampling_noise", plot_sampling)
     monkeypatch.setattr(runner, "analyze_adc_cdac_settling", analyze_settling)
     monkeypatch.setattr(runner, "plot_adc_cdac_settling", plot_settling)
+
+    artifacts = runner.adc_pex_flavor_paths(tmp_path / "output")
+
+    assert len(artifacts) == 39
+    assert len(settling_outputs) == 12
+    assert sampling_outputs[0][0] == 12
+    assert len((tmp_path / "output/adc_sampling_levels.csv").read_text().splitlines()) == 37
+    assert len((tmp_path / "output/adc_sampling_noise.csv").read_text().splitlines()) == 13
+    assert selections == ["all"] * 12
+    assert outputs == [
+        f"spice_{flavor}_{rate_msps}msps_cm700mv_dc50mv_50mv_{rate_msps}msps_decision_path_density"
+        for flavor in flavors
+        for rate_msps in (10, 2, 6)
+    ]
+
+    settling_outputs.clear()
 
     settling_artifacts = runner.adc_pex_cdac_settling(tmp_path / "output")
 
