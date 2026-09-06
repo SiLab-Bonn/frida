@@ -115,25 +115,30 @@ uv run python -m flow.samp.sim
 uv run python -m flow.cdac.sim
 ```
 
-Each target owns its reviewed parameter recipe. ADC targets use `--check`;
-other blocks retain their short `_check` targets. These diagnostic modes run
-noise-free transients with Spectre circuit checks and AHDL linting:
+Each target owns its reviewed parameter recipe. Short, noise-free Spectre
+diagnostics use the same Python target with `check=True`, through pytest only:
 
 ```bash
-# ADC generated-view and extracted-view checks
-uv run python -m flow.adc.sim hdl21_fixed_input_noise_vs_rate --check
-uv run python -m flow.adc.sim hdl21_transfer_curve --check
-uv run python -m flow.adc.sim frida1_fixed_input_noise_vs_rate --check
-uv run python -m flow.adc.sim frida1_transfer_curve --check
-
-# Comparator checks
-uv run python -m flow.comp.sim frida65_baseline_check
-uv run python -m flow.comp.sim frida65_candidate_check
-
-# Sampler and CDAC checks
-uv run python -m flow.samp.sim frida65_baseline_check
-uv run python -m flow.cdac.sim frida65_baseline_check
+source /eda/local/scripts/cadence_2024-25.sh
+uv run pytest -m spectre
+# Select just one worker campaign's preflight, if needed:
+uv run pytest -m spectre -k 'adc-frida2_fixed_input_noise'
 ```
+
+Allow roughly one hour for the full Spectre suite on asiclab003; runtime depends
+on the host and available resources. Run the full group occasionally or after
+broad simulation-flow changes, not after every edit. For routine changes, use
+`-k` to select the tests covering the affected block or experiment. "Short"
+describes the simulated time, not the wall-clock runtime of extracted circuits.
+
+The `spectre` group is excluded by default and requires no custom pytest flag.
+It covers all eleven experiment targets, including six representative comparator
+cases. Artifacts and diagnostic reports remain beneath timestamped
+`build/diagnostics/` directories. Missing Spectre or an unavailable PDK installation
+skips with a reason; missing configured inputs, invalid decks, license failures,
+and simulator errors fail. Circuit-check findings remain available in reports;
+these diagnostics are not comprehensive circuit signoff. There are no CLI
+diagnostic flags, netlist-only modes, or separate check targets.
 
 ## Circuit simulation
 
@@ -150,12 +155,12 @@ uv run python -m flow.adc.sim hdl21_transfer_curve
 uv run python -m flow.adc.sim frida1_transfer_curve
 
 # Comparator campaigns
-uv run python -m flow.comp.sim frida65_baseline_noise
-uv run python -m flow.comp.sim frida65_candidates
+uv run python -m flow.comp.sim hdl21_comp_perf_vs_size
+uv run python -m flow.comp.sim frida1_fixed_input_noise
 
 # First standalone block-level simulations
-uv run python -m flow.samp.sim frida65_baseline_transient
-uv run python -m flow.cdac.sim frida65_baseline_transient
+uv run python -m flow.samp.sim frida1_transient
+uv run python -m flow.cdac.sim frida1_transfer_curve
 ```
 
 The extracted fixed-input rate sweep groups the one-layer and two-layer radix-17
@@ -174,8 +179,8 @@ manifest. Accepted analysis directories remain explicit paths in
 
 Every executable target builds one native HDL21 `Sim` per parameter variant
 and calls `Sim.run()` or `hs.run()` with the timestamped output as the VLSIR
-run directory. ADC batches use isolated spawned processes, while the larger
-comparator candidate campaign bounds its standard-library executor; the
+run directory. ADC and comparator batches use isolated spawned processes.
+The comparator campaign runs 24 workers with one Spectre thread each; the
 single-case sampler and CDAC targets run directly. ADC and comparator convert
 the returned transient to typed HDF5 before releasing it; the standalone
 sampler and CDAC targets retain the native raw result without converting it.
@@ -316,10 +321,9 @@ uv run python -m flow.adc.sim hdl21_fixed_input_noise_vs_rate
 uv run python -m flow.adc.sim frida1_fixed_input_noise_vs_rate
 ```
 
-Use the same target with `--check` for a short, noise-free Spectre run with
-circuit checks and AHDL linting. Results are written below a fresh
-`build/sim/adc/<target>/<YYYYMMDD_HHMMSS>/`; omitting the target lists all
-choices.
+Use the `spectre` pytest group for short diagnostics with circuit checks and
+AHDL linting. Normal CLI runs write below a fresh
+`build/sim/adc/<target>/<YYYYMMDD_HHMMSS>/`; omitting the target lists all choices.
 
 For the extracted-layout comparison, `frida1_fixed_input_noise` selects all four
 historical flavors and `frida2_fixed_input_noise` selects the connected one-,
@@ -328,15 +332,16 @@ differential input, 700 mV common mode, 1.2 V supplies, and transient device noi
 the same testbench and result conversion as the rate-sweep targets.
 
 ```bash
-uv run python -m flow.adc.sim frida1_fixed_input_noise --netlist-only
-uv run python -m flow.adc.sim frida2_fixed_input_noise --netlist-only
+uv run pytest -m spectre -k 'adc and fixed_input_noise and not vs_rate'
 uv run python -m flow.adc.sim frida1_fixed_input_noise
 uv run python -m flow.adc.sim frida2_fixed_input_noise
 uv run python -m flow.analysis.runner adc_pex_flavor_paths --inputs /path/to/completed/campaign
 ```
 
-Netlist-only preflight checks the actual extracted port order and internal
-waveform nodes, and writes the complete Spectre input without launching it.
+Worker preflight uses these diagnostic tests: it checks the actual extracted
+port order and internal waveform nodes, generates the complete input, and runs
+short Spectre diagnostics. Require passing tests, not skipped prerequisites,
+before deploying a long campaign.
 Each case records its PEX SHA-256. A worker snapshot must include the selected
 `build/layout/adc/<target>/<timestamp>/` signoff summary and PEX netlist.
 Only the two historical two-layer targets may accept the explicitly recorded

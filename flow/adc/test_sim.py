@@ -151,9 +151,8 @@ def test_supply_noise_testbench_repeats_independent_rail_networks() -> None:
 
 
 @pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
-@pytest.mark.parametrize("netlist_only", (False, True))
 @pytest.mark.parametrize("check", (False, True))
-def test_fixed_input_campaigns(family, count, netlist_only, check, tmp_path, monkeypatch):
+def test_fixed_input_campaigns(family, count, check, tmp_path, monkeypatch):
     calls = []
     started = Barrier(count)
 
@@ -170,7 +169,7 @@ def test_fixed_input_campaigns(family, count, netlist_only, check, tmp_path, mon
     monkeypatch.setattr(sim, "ProcessPoolExecutor", pool)
     monkeypatch.setattr(sim, "_run_adc_sim", capture)
     root = tmp_path / "campaign"
-    assert getattr(sim, f"{family}_fixed_input_noise")(root, check=check, netlist_only=netlist_only) == root
+    assert getattr(sim, f"{family}_fixed_input_noise")(root, check=check) == root
     assert len(calls) == count
     assert len({directory.name for directory, *_ in calls}) == count
     for directory, params, options in calls:
@@ -181,7 +180,7 @@ def test_fixed_input_campaigns(family, count, netlist_only, check, tmp_path, mon
         assert float(params.symbol_rate) == 1.6e9
         assert float(params.vin_diff.dc) == 0.05
         assert float(params.vin_cm.dc) == pytest.approx(0.7)
-        assert options["netlist_only"] == netlist_only and options["check"] == check
+        assert options["check"] == check
         assert options["noise"] is True
         assert options["pex_netlist"].name == f"{directory.name}.pex.netlist"
         assert options["pex_netlist"].parent.name.startswith("20260905_")
@@ -233,11 +232,11 @@ def test_other_campaign_recipes(target, count, workers, check, tmp_path, monkeyp
 
     monkeypatch.setattr(sim, "ProcessPoolExecutor", pool)
     monkeypatch.setattr(sim, "_run_adc_sim", capture)
-    assert getattr(sim, target)(tmp_path, check=check, netlist_only=True) == tmp_path
+    assert getattr(sim, target)(tmp_path, check=check) == tmp_path
     assert len(calls) == count
     assert len({directory for directory, *_ in calls}) == count
     for directory, params, options in calls:
-        assert options["check"] == check and options["netlist_only"]
+        assert options["check"] == check
         assert params.view == ("hdl21gen" if target.startswith("hdl21") else "frida1")
         if "transfer_curve" in target:
             assert params.conversions == 151
@@ -264,8 +263,6 @@ def test_other_campaign_recipes(target, count, workers, check, tmp_path, monkeyp
 @pytest.fixture
 def captured_executor(monkeypatch):
     from types import SimpleNamespace
-
-    from vlsirtools.spice import spectre
 
     from flow.analysis import io
     from flow.circuit import results
@@ -303,24 +300,13 @@ def captured_executor(monkeypatch):
 
         def run(options):
             captured["options"] = options
+            if captured.get("fail"):
+                raise RuntimeError("simulator/license failure")
             return {sim.AnalysisType.TRAN: SimpleNamespace(data={})}
 
         return SimpleNamespace(run=run)
 
     monkeypatch.setattr(hs, "Sim", build)
-    monkeypatch.setattr(hs, "to_proto", lambda *_: "proto")
-
-    class Backend:
-        def __init__(self, proto, options):
-            captured.update(proto=proto, options=options)
-
-        def setup(self):
-            captured["setup"] = True
-
-        def write_netlist(self):
-            captured["netlist"] = True
-
-    monkeypatch.setattr(spectre, "SpectreSim", Backend)
     return captured
 
 
@@ -343,8 +329,7 @@ def pex_input(tmp_path):
 
 @pytest.mark.parametrize("view,threads", (("hdl21gen", 8), ("frida2", 8), ("frida1", 6)))
 @pytest.mark.parametrize("check", (False, True))
-@pytest.mark.parametrize("netlist_only", (False, True))
-def test_single_executor_modes(view, threads, check, netlist_only, captured_executor, pex_input, tmp_path):
+def test_single_executor_modes(view, threads, check, captured_executor, pex_input, tmp_path):
     if view == "frida1":
         ports = " ".join(port.name for port in Frida1PexAdc.port_list)
         pex_input.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
@@ -360,7 +345,6 @@ def test_single_executor_modes(view, threads, check, netlist_only, captured_exec
         pex_netlist=None if view == "hdl21gen" else pex_input,
         noise=True,
         check=check,
-        netlist_only=netlist_only,
     )
     captured = captured_executor
     tran = next(attr for attr in captured["attrs"] if isinstance(attr, hs.Tran))
@@ -376,8 +360,7 @@ def test_single_executor_modes(view, threads, check, netlist_only, captured_exec
     literals = "\n".join(attr.text for attr in captured["attrs"] if isinstance(attr, h.Literal))
     assert ("check_setuphold" in literals) == check
     assert ("simulator lang=spice" in literals) == (view == "hdl21gen")
-    assert captured.get("netlist", False) == netlist_only
-    assert ("converted" in captured) == (not check and not netlist_only)
+    assert ("converted" in captured) == (not check)
     metadata = json.loads((root / "input.json").read_text())
     assert metadata["spectre_threads"] == threads
     assert metadata["transient_noise"] == (not check)
@@ -431,9 +414,26 @@ def test_executor_rejects_bad_pex(fault, message, captured_executor, pex_input, 
             tmp_path / "run",
             sim.AdcTbParams(view="frida2", pex_cell="adc_12b_17step"),
             pex_netlist=pex_input,
-            netlist_only=True,
+            check=True,
         )
-    assert "netlist" not in captured_executor
+    assert "options" not in captured_executor
+
+
+def test_missing_configured_pex_fails(captured_executor, tmp_path):
+    with pytest.raises(FileNotFoundError):
+        sim._run_adc_sim(
+            tmp_path / "run",
+            sim.AdcTbParams(view="frida2", pex_cell="adc_12b_17step"),
+            pex_netlist=tmp_path / "missing.pex.netlist",
+            check=True,
+        )
+    assert "options" not in captured_executor
+
+
+def test_diagnostic_simulator_error_propagates(captured_executor, tmp_path):
+    captured_executor["fail"] = True
+    with pytest.raises(RuntimeError, match="simulator/license failure"):
+        sim._run_adc_sim(tmp_path / "run", sim.AdcTbParams(), check=True)
 
 
 @pytest.mark.parametrize(
@@ -461,11 +461,11 @@ def test_historical_lvs_exception_is_narrow(view, target, warning, accepted, cap
             }
         )
     )
-    kwargs = {"pex_netlist": renamed, "expected_disconnect": True, "netlist_only": True}
+    kwargs = {"pex_netlist": renamed, "expected_disconnect": True, "check": True}
     params = sim.AdcTbParams(view=view, pex_cell="adc_12b_17step")
     if accepted:
         sim._run_adc_sim(tmp_path / "run", params, **kwargs)
-        assert captured_executor["netlist"]
+        assert captured_executor["options"]
     else:
         with pytest.raises(ValueError, match="unaccepted LVS"):
             sim._run_adc_sim(tmp_path / "run", params, **kwargs)
@@ -491,8 +491,7 @@ def test_adc_main_lists_only_experiment_targets_in_family_order(monkeypatch, cap
     assert functions == ["_run_adc_sim"]
 
 
-@pytest.mark.parametrize("check,netlist_only", ((False, False), (True, False), (False, True), (True, True)))
-def test_main_forwards_execution_modes(check, netlist_only, tmp_path, monkeypatch):
+def test_main_runs_full_experiment(tmp_path, monkeypatch):
     calls = []
 
     def frida2_fixed_input_noise(directory, **options):
@@ -505,12 +504,10 @@ def test_main_forwards_execution_modes(check, netlist_only, tmp_path, monkeypatc
         [
             "sim",
             "frida2_fixed_input_noise",
-            *(["--check"] if check else []),
-            *(["--netlist-only"] if netlist_only else []),
         ],
     )
     sim.main()
     directory, options = calls[0]
     assert directory.parent == tmp_path / "build/sim/adc/frida2_fixed_input_noise"
     assert directory.is_dir()
-    assert options == {"check": check, "netlist_only": netlist_only}
+    assert options == {}

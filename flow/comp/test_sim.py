@@ -33,12 +33,9 @@ def test_comparator_testbench_rejects_repeated_values() -> None:
         sim.CompTb(sim.CompTbParams(vin_diff_values_v=(0.0, 0.0)))
 
 
-def test_comparator_main_owns_the_four_named_targets() -> None:
+def test_main_owns_only_experiment_targets() -> None:
     source = inspect.getsource(sim.main)
-    for name in (
-        "frida65_baseline_check",
-        "frida65_candidate_check",
-        "frida65_baseline_noise",
-        "frida65_candidates",
-    ):
-        assert name in source
+    assert "hdl21_comp_perf_vs_size" in source
+    assert "frida1_fixed_input_noise" in source
+    assert "_check" not in source
+    assert "TARGETS" not in vars(sim)

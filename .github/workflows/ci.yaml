@@ -127,6 +127,11 @@ jobs:
           flow/adc/test_subckt.py
           flow/comp/test_subckt.py
           flow/samp/test_subckt.py
+          flow/comp/test_sim.py
+          flow/samp/test_sim.py
+          flow/cdac/test_sim.py
+          flow/circuit/test_sim.py
+          flow/circuit/test_spectre.py
           flow/scans/test_plldrp.py
           test/test_adc_capdriver.py
           test/test_salogic.py

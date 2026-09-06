@@ -10,9 +10,6 @@ from hdl21.prefix import f, p
 from hdl21.primitives import C, Vdc, Vpwl
 from vlsirtools.spice import ResultFormat, SimOptions, SupportedSimulators
 
-from pdk import tsmc65
-from pdk.tsmc65 import site
-
 from .subckt import Cdac, CdacParams
 
 
@@ -67,62 +64,13 @@ def CdacTb(params: CdacTbParams) -> h.Module:
     return CdacTb
 
 
-def frida65_baseline_check(run_dir: Path) -> Path:
-    """Run one short, noise-free CDAC transient with Spectre circuit checks."""
-
-    params = CdacTbParams()
-    h.pdk.set_default(tsmc65.pdk_logic)
-    tb = CdacTb(params)
-    h.pdk.compile(tb)
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save([tb.top, tb.dac_bits, "xtop.vvdd:p"]),
-            h.Literal(
-                "check_caps static_capacitor type=distr\n"
-                "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                "gate2power=on gate2ground=on\n"
-                "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                "check_dcpath static_dcpath net=[xtop.vdd 0]\n"
-                "check_topology static_topology node=[*] pin2gnd=on\n"
-                "check_nodecap dyn_nodecap node=[xtop.top] time=[100n 200n]"
-            ),
-            hs.Tran(
-                tstop=params.code_dwell_s + params.transition_time_s,
-                name="tran",
-                options={"strobeperiod": 100 * p, "strobeoutput": "strobeonly"},
-            ),
-        ],
-    )
-    simulation.run(
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=4",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        )
-    )
-    return run_dir
-
-
-def frida65_baseline_transient(run_dir: Path) -> Path:
+def frida1_transfer_curve(run_dir: Path, *, check: bool = False) -> Path:
     """Run the complete fabricated-size CDAC code ramp."""
 
+    from pdk import tsmc65
+    from pdk.tsmc65 import site
+
+    run_dir.mkdir(parents=True, exist_ok=True)
     params = CdacTbParams()
     h.pdk.set_default(tsmc65.pdk_logic)
     tb = CdacTb(params)
@@ -136,8 +84,27 @@ def frida65_baseline_transient(run_dir: Path) -> Path:
             hs.Options(name="temp", value=25.0),
             hs.Options(name="save", value="selected"),
             hs.Save([tb.top, tb.dac_bits, "xtop.vvdd:p"]),
+            *(
+                [
+                    h.Literal(
+                        "check_caps static_capacitor type=distr\n"
+                        "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
+                        "gate2power=on gate2ground=on\n"
+                        "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
+                        "check_dcpath static_dcpath net=[xtop.vdd 0]\n"
+                        "check_topology static_topology node=[*] pin2gnd=on\n"
+                        "check_nodecap dyn_nodecap node=[xtop.top] time=[100n 200n]"
+                    ),
+                ]
+                if check
+                else []
+            ),
             hs.Tran(
-                tstop=n_codes * params.code_dwell_s + (n_codes - 1) * params.transition_time_s,
+                tstop=(
+                    params.code_dwell_s + params.transition_time_s
+                    if check
+                    else n_codes * params.code_dwell_s + (n_codes - 1) * params.transition_time_s
+                ),
                 name="tran",
                 options={"strobeperiod": 100 * p, "strobeoutput": "strobeonly"},
             ),
@@ -146,7 +113,7 @@ def frida65_baseline_transient(run_dir: Path) -> Path:
     simulation.run(
         SimOptions(
             simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.SIM_DATA,
+            fmt=ResultFormat.NONE if check else ResultFormat.SIM_DATA,
             rundir=run_dir,
             simulator_args=(
                 "+preset=mx",
@@ -156,6 +123,7 @@ def frida65_baseline_transient(run_dir: Path) -> Path:
                 "+escchars",
                 "+log",
                 "spectre.log",
+                *(("-ahdllint=warn", "-ahdllint_log", "ahdllint.log") if check else ()),
             ),
         )
     )
@@ -165,7 +133,7 @@ def frida65_baseline_transient(run_dir: Path) -> Path:
 def main() -> None:
     """Create one output directory and run one named CDAC target."""
 
-    targets = {target.__name__: target for target in (frida65_baseline_check, frida65_baseline_transient)}
+    targets = {target.__name__: target for target in (frida1_transfer_curve,)}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", nargs="?", choices=sorted(targets))
     args = parser.parse_args()

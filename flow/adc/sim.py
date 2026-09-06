@@ -351,7 +351,6 @@ def _run_adc_sim(
     pex_netlist: Path | None = None,
     noise: bool = False,
     check: bool = False,
-    netlist_only: bool = False,
     expected_disconnect: bool = False,
     maximum_waveform_records: int | None = None,
 ) -> Path:
@@ -361,7 +360,7 @@ def _run_adc_sim(
     select explicit PEX inputs and noise settings, and submit independent cases
     concurrently. This executor owns the shared mechanics: generate/compile the
     testbench, validate extracted interfaces, build the Spectre simulation, run
-    it (or only write its netlist), and save the repository-native measurement.
+    short diagnostics or the full simulation, and save the repository-native measurement.
     Flavor/rate sweeps and campaign selection belong in the named targets below,
     not in additional flavor-specific wrappers.
     """
@@ -383,7 +382,6 @@ def _run_adc_sim(
         "weights": get_cdac_weights(params.dut.cdac),
         "spectre_threads": spectre_threads,
         "check": check,
-        "netlist_only": netlist_only,
         "transient_noise": noise and not check,
         "expected_historical_disconnect": expected_disconnect,
     }
@@ -507,13 +505,6 @@ def _run_adc_sim(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "input.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    if netlist_only:
-        from vlsirtools.spice.spectre import SpectreSim
-
-        backend = SpectreSim(hs.to_proto(simulation), options)
-        backend.setup()
-        backend.write_netlist()
-        return run_dir
     result = simulation.run(options)
     if not check:
         transient = cast(TranResult, cast(SimResult, result)[AnalysisType.TRAN])
@@ -528,7 +519,7 @@ def _run_adc_sim(
     return run_dir
 
 
-def hdl21_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def hdl21_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False) -> Path:
     """Run the generated ADC at 2, 6, and 10 MS/s with 50 mV input."""
 
     with ProcessPoolExecutor(max_workers=3, mp_context=get_context("spawn")) as executor:
@@ -548,7 +539,6 @@ def hdl21_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netli
                     params,
                     noise=True,
                     check=check,
-                    netlist_only=netlist_only,
                     maximum_waveform_records=3,
                 )
             )
@@ -557,7 +547,7 @@ def hdl21_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netli
     return run_dir
 
 
-def hdl21_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def hdl21_transfer_curve(run_dir: Path, *, check: bool = False) -> Path:
     """Run the generated ADC from -750 mV to +750 mV in 10 mV steps."""
 
     params = AdcTbParams(
@@ -571,12 +561,11 @@ def hdl21_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: bo
         run_dir,
         params,
         check=check,
-        netlist_only=netlist_only,
         maximum_waveform_records=3,
     )
 
 
-def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
     """Run all four historical flavors at 10 MS/s, 100 conversions each."""
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
@@ -606,7 +595,6 @@ def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only
                         pex_netlist=pex,
                         noise=True,
                         check=check,
-                        netlist_only=netlist_only,
                         expected_disconnect=layers == 2,
                     )
                 )
@@ -615,7 +603,7 @@ def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only
     return run_dir
 
 
-def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False) -> Path:
     """Run the four original PEX flavors at 2, 6, and 10 MS/s."""
 
     from pdk.tsmc65 import site
@@ -651,7 +639,6 @@ def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netl
                             pex_netlist=pex,
                             noise=True,
                             check=check,
-                            netlist_only=netlist_only,
                         )
                     )
         for future in futures:
@@ -659,7 +646,7 @@ def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netl
     return run_dir
 
 
-def frida1_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def frida1_transfer_curve(run_dir: Path, *, check: bool = False) -> Path:
     """Run the original extracted ADC from -750 mV to +750 mV in 10 mV steps."""
 
     from pdk.tsmc65 import site
@@ -676,12 +663,11 @@ def frida1_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: b
         params,
         pex_netlist=site.ADC_PEX_NETLIST,
         check=check,
-        netlist_only=netlist_only,
         maximum_waveform_records=3,
     )
 
 
-def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False) -> Path:
     """Run the 15 original extracted-ADC rate/supply-noise combinations."""
 
     from pdk.tsmc65 import site
@@ -716,7 +702,6 @@ def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_o
                         params,
                         pex_netlist=site.ADC_PEX_NETLIST,
                         check=check,
-                        netlist_only=netlist_only,
                         maximum_waveform_records=3,
                     )
                 )
@@ -725,7 +710,7 @@ def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_o
     return run_dir
 
 
-def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only: bool = False) -> Path:
+def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
     """Run all three connected radix-17 stacks at 10 MS/s, 100 conversions each."""
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
@@ -750,7 +735,6 @@ def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only
                     pex_netlist=root / target / stamp / f"{target}.pex.netlist",
                     noise=True,
                     check=check,
-                    netlist_only=netlist_only,
                 )
             )
         for future in futures:
@@ -759,7 +743,7 @@ def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only
 
 
 def main() -> None:
-    """Select an experiment; check and netlist-only are execution modes."""
+    """Select an experiment; diagnostics are available to Python callers only."""
 
     targets = {
         target.__name__: target
@@ -775,8 +759,6 @@ def main() -> None:
     }
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", nargs="?", choices=list(targets))
-    parser.add_argument("--check", action="store_true", help="Run 100 ns with circuit checks and AHDL lint")
-    parser.add_argument("--netlist-only", action="store_true", help="Write and validate the deck without Spectre")
     args = parser.parse_args()
     if args.target is None:
         print("Available ADC simulation targets:")
@@ -790,7 +772,7 @@ def main() -> None:
         / datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     )
     run_dir.mkdir(parents=True, exist_ok=False)
-    targets[args.target](run_dir, check=args.check, netlist_only=args.netlist_only)
+    targets[args.target](run_dir)
 
 
 if __name__ == "__main__":

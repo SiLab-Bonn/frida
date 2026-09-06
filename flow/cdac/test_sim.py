@@ -29,8 +29,8 @@ def test_cdac_testbench_packs_code_with_c0_as_highest_stage() -> None:
     assert len(tb.vdac_15.of.params.wave.points) == 4096
 
 
-def test_cdac_main_owns_check_and_transient_targets() -> None:
+def test_main_owns_only_experiment_targets() -> None:
     source = inspect.getsource(sim.main)
-    assert "frida65_baseline_check" in source
-    assert "frida65_baseline_transient" in source
+    assert "frida1_transfer_curve" in source
+    assert "_check" not in source
     assert "TARGETS" not in vars(sim)

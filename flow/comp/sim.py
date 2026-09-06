@@ -5,8 +5,9 @@ import hashlib
 import json
 import math
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
+from multiprocessing import get_context
 from pathlib import Path
 from typing import cast
 
@@ -18,8 +19,6 @@ from vlsirtools.spice.sim_data import AnalysisType, SimResult, TranResult
 
 from flow.analysis.io import write_measurement
 from flow.circuit.results import comp_signal_names, convert_spectre_comp_to_measurement
-from pdk import tsmc65
-from pdk.tsmc65 import site
 
 from .subckt import Bias, Comp, CompParams, Stages, State, is_valid_comp_params
 
@@ -144,236 +143,48 @@ def CompTb(params: CompTbParams) -> h.Module:
     return CompTb
 
 
-def frida65_baseline_check(run_dir: Path) -> Path:
-    """Run one fabricated-size decision with Spectre circuit checks."""
+def _run_comp_sim(
+    run_dir: Path,
+    params: CompTbParams,
+    *,
+    candidate_id: str,
+    candidate_label: str,
+    topology_index: int,
+    size_profile: str,
+    check: bool = False,
+) -> Path:
+    """Execute one configured comparator case, not an entire campaign.
 
-    params = CompTbParams(
-        comp=CompParams(
-            diffpair_w=37,
-            tail_w=5,
-            rst_w=8,
-            latch_on_w=25,
-            latch_init_w=33,
-            srlatch_n_w=4,
-            srlatch_p_w=8,
-            diffpair_l=5,
-            tail_l=13,
-            rst_l=1,
-            latch_on_l=6,
-            latch_init_l=17,
-        ),
-        vin_cm_values_v=(0.8,),
-        vin_diff_values_v=(0.0,),
-        conversions=1,
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    tb = CompTb(params)
-    h.pdk.compile(tb)
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
+    Targets define experiments: topology, sizing, stimuli, and case concurrency.
+    This executor owns compilation, the shared Spectre recipe, short diagnostic
+    checks, and measurement output. Each campaign worker compiles in an isolated
+    process and uses one Spectre thread; no compiled HDL21 graph crosses workers.
+    """
+    from pdk import tsmc65
+    from pdk.tsmc65 import site
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if not is_valid_comp_params(params.comp):
+        raise ValueError(f"invalid comparator case {candidate_id}")
+    try:
+        h.pdk.set_default(tsmc65.pdk_logic)
+        tb = CompTb(params)
+        h.pdk.compile(tb)
+        tstop_s = (
+            len(params.vin_cm_values_v)
+            * len(params.vin_diff_values_v)
+            * params.conversions
+            * (float(params.reset_time_s) + float(params.evaluation_time_s))
+        )
+        attrs = [
             site.install.include(h.pdk.Corner.TYP),
             site.install.include_pre_simulation(),
             hs.Options(name="temp", value=25.0),
             hs.Options(name="save", value="selected"),
-            hs.Save([raw for name, raw in comp_signal_names().items() if name != "time_s"]),
-            h.Literal(
-                "check_caps static_capacitor type=distr\n"
-                "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
-                "gate2power=on gate2ground=on\n"
-                "check_highz static_highz node=[*] fanout=gate_has_driver_no_moscap\n"
-                "check_dcpath static_dcpath net=[xtop.vdd 0]\n"
-                "check_stack static_stack count=3\n"
-                "check_topology static_topology node=[*] pin2gnd=on\n"
-                "check_nodecap dyn_nodecap node=[xtop.in_p xtop.in_n xtop.out_p xtop.out_n] time=[10n 39n]\n"
-                "check_setuphold dyn_setuphold node=[xtop.out_p xtop.out_n] ref_node=xtop.clk "
-                "setup_time=50p hold_time=50p"
-            ),
-            hs.Tran(tstop=40e-9, name="tran", options={"strobeperiod": 500e-12, "strobeoutput": "strobeonly"}),
-        ],
-    )
-    simulation.run(
-        SimOptions(
-            simulator=SupportedSimulators.SPECTRE,
-            fmt=ResultFormat.NONE,
-            rundir=run_dir,
-            simulator_args=(
-                "+preset=mx",
-                "+mt=1",
-                "+lqtimeout",
-                "3600",
-                "+escchars",
-                "+log",
-                "spectre.log",
-                "-ahdllint=warn",
-                "-ahdllint_log",
-                "ahdllint.log",
-            ),
-        )
-    )
-    return run_dir
-
-
-def frida65_candidate_check(run_dir: Path) -> Path:
-    """Run six representative comparator candidates through circuit checks."""
-
-    cases = (
-        (
-            "fabricated_single_nmos_switched",
-            CompParams(
-                diffpair_w=37,
-                tail_w=5,
-                rst_w=8,
-                latch_on_w=25,
-                latch_init_w=33,
-                srlatch_n_w=4,
-                srlatch_p_w=8,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.NMOS,
-                preamp_bias=Bias.SWITCHED,
-                comp_stages=Stages.SINGLE,
-                latch_inner_init_xtors=State.CLOCK,
-            ),
-        ),
-        (
-            "half_single_pmos_dynamic",
-            CompParams(
-                diffpair_w=19,
-                tail_w=3,
-                rst_w=4,
-                latch_on_w=13,
-                latch_init_w=17,
-                srlatch_n_w=2,
-                srlatch_p_w=4,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.PMOS,
-                preamp_bias=Bias.DYNAMIC,
-                comp_stages=Stages.SINGLE,
-                latch_inner_init_xtors=State.SIGNAL,
-            ),
-        ),
-        (
-            "double_double_nmos_switched",
-            CompParams(
-                diffpair_w=74,
-                tail_w=10,
-                rst_w=16,
-                latch_on_w=50,
-                latch_init_w=66,
-                srlatch_n_w=8,
-                srlatch_p_w=16,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.NMOS,
-                preamp_bias=Bias.SWITCHED,
-                comp_stages=Stages.DOUBLE,
-                latch_inner_on_xtors=State.SIGNAL,
-                latch_outer_on_xtors=State.OMIT,
-                latch_inner_init_xtors=State.CLOCK,
-                latch_outer_init_xtors=State.OMIT,
-            ),
-        ),
-        (
-            "fabricated_double_pmos_dynamic",
-            CompParams(
-                diffpair_w=37,
-                tail_w=5,
-                rst_w=8,
-                latch_on_w=25,
-                latch_init_w=33,
-                srlatch_n_w=4,
-                srlatch_p_w=8,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.PMOS,
-                preamp_bias=Bias.DYNAMIC,
-                comp_stages=Stages.DOUBLE,
-                latch_inner_on_xtors=State.CLOCK,
-                latch_outer_on_xtors=State.SIGNAL,
-                latch_inner_init_xtors=State.SIGNAL,
-                latch_outer_init_xtors=State.OMIT,
-            ),
-        ),
-        (
-            "half_double_nmos_dynamic",
-            CompParams(
-                diffpair_w=19,
-                tail_w=3,
-                rst_w=4,
-                latch_on_w=13,
-                latch_init_w=17,
-                srlatch_n_w=2,
-                srlatch_p_w=4,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.NMOS,
-                preamp_bias=Bias.DYNAMIC,
-                comp_stages=Stages.DOUBLE,
-                latch_inner_on_xtors=State.SIGNAL,
-                latch_outer_on_xtors=State.CLOCK,
-                latch_inner_init_xtors=State.CLOCK,
-                latch_outer_init_xtors=State.CLOCK,
-            ),
-        ),
-        (
-            "double_double_pmos_switched",
-            CompParams(
-                diffpair_w=74,
-                tail_w=10,
-                rst_w=16,
-                latch_on_w=50,
-                latch_init_w=66,
-                srlatch_n_w=8,
-                srlatch_p_w=16,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-                preamp_diff_xtors=MosType.PMOS,
-                preamp_bias=Bias.SWITCHED,
-                comp_stages=Stages.DOUBLE,
-                latch_inner_on_xtors=State.CLOCK,
-                latch_outer_on_xtors=State.CLOCK,
-                latch_inner_init_xtors=State.SIGNAL,
-                latch_outer_init_xtors=State.SIGNAL,
-            ),
-        ),
-    )
-    h.pdk.set_default(tsmc65.pdk_logic)
-    for name, comp in cases:
-        if not is_valid_comp_params(comp):
-            raise ValueError(f"representative comparator case {name} is invalid")
-        case_dir = run_dir / name
-        case_dir.mkdir()
-        params = CompTbParams(comp=comp, vin_cm_values_v=(0.8,), vin_diff_values_v=(0.0,), conversions=1)
-        tb = CompTb(params)
-        h.pdk.compile(tb)
-        simulation = hs.Sim(
-            tb=tb,
-            attrs=[
-                site.install.include(h.pdk.Corner.TYP),
-                site.install.include_pre_simulation(),
-                hs.Options(name="temp", value=25.0),
-                hs.Options(name="save", value="selected"),
-                hs.Save([raw for canonical, raw in comp_signal_names().items() if canonical != "time_s"]),
+            hs.Save([raw for canonical, raw in comp_signal_names().items() if canonical != "time_s"]),
+        ]
+        if check:
+            attrs.append(
                 h.Literal(
                     "check_caps static_capacitor type=distr\n"
                     "check_erc static_erc floatbulk=all floatgate=no_top_moscap dangle=no_top "
@@ -385,15 +196,19 @@ def frida65_candidate_check(run_dir: Path) -> Path:
                     "check_nodecap dyn_nodecap node=[xtop.in_p xtop.in_n xtop.out_p xtop.out_n] time=[10n 39n]\n"
                     "check_setuphold dyn_setuphold node=[xtop.out_p xtop.out_n] ref_node=xtop.clk "
                     "setup_time=50p hold_time=50p"
-                ),
-                hs.Tran(tstop=40e-9, name="tran", options={"strobeperiod": 500e-12, "strobeoutput": "strobeonly"}),
-            ],
-        )
-        simulation.run(
+                )
+            )
+        tran_options = {"strobeperiod": 500e-12, "strobeoutput": "strobeonly"}
+        if not check:
+            tran_options.update(noisefmin=1.0 / tstop_s, noisefmax="25G", noiseseed=1)
+        attrs.append(hs.Tran(tstop=tstop_s, name="tran", noise=not check, options=tran_options))
+        simulation = hs.Sim(tb=tb, attrs=attrs)
+        started = time.perf_counter()
+        result = simulation.run(
             SimOptions(
                 simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.NONE,
-                rundir=case_dir,
+                fmt=ResultFormat.NONE if check else ResultFormat.SIM_DATA,
+                rundir=run_dir,
                 simulator_args=(
                     "+preset=mx",
                     "+mt=1",
@@ -402,17 +217,343 @@ def frida65_candidate_check(run_dir: Path) -> Path:
                     "+escchars",
                     "+log",
                     "spectre.log",
-                    "-ahdllint=warn",
-                    "-ahdllint_log",
-                    "ahdllint.log",
+                    *(("-ahdllint=warn", "-ahdllint_log", "ahdllint.log") if check else ()),
                 ),
             )
         )
+        runtime_s = time.perf_counter() - started
+        if not check:
+            transient = cast(TranResult, cast(SimResult, result)[AnalysisType.TRAN])
+            measurement = convert_spectre_comp_to_measurement(
+                transient.data,
+                params=params,
+                raw_path=run_dir / "netlist.raw",
+                signal_names=comp_signal_names(),
+                candidate_id=candidate_id,
+                candidate_label=candidate_label,
+                topology_index=topology_index,
+                size_profile=size_profile,
+                compiled_tb=tb,
+                spectre_runtime_s=runtime_s,
+            )
+            write_measurement(run_dir / "result.h5", measurement)
+    finally:
+        CompTb.Cache.reset()
+        Comp.Cache.reset()
     return run_dir
 
 
-def frida65_baseline_noise(run_dir: Path) -> Path:
-    """Run the fabricated comparator's complete transient-noise S-curve."""
+def hdl21_comp_perf_vs_size(run_dir: Path, *, check: bool = False) -> Path:
+    """Run 296 generated sizes plus FRIDA-1; checks cover six representative cases."""
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if check:
+        cases = (
+            (
+                "fabricated_single_nmos_switched",
+                CompParams(
+                    diffpair_w=37,
+                    tail_w=5,
+                    rst_w=8,
+                    latch_on_w=25,
+                    latch_init_w=33,
+                    srlatch_n_w=4,
+                    srlatch_p_w=8,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.NMOS,
+                    preamp_bias=Bias.SWITCHED,
+                    comp_stages=Stages.SINGLE,
+                    latch_inner_init_xtors=State.CLOCK,
+                ),
+            ),
+            (
+                "half_single_pmos_dynamic",
+                CompParams(
+                    diffpair_w=19,
+                    tail_w=3,
+                    rst_w=4,
+                    latch_on_w=13,
+                    latch_init_w=17,
+                    srlatch_n_w=2,
+                    srlatch_p_w=4,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.PMOS,
+                    preamp_bias=Bias.DYNAMIC,
+                    comp_stages=Stages.SINGLE,
+                    latch_inner_init_xtors=State.SIGNAL,
+                ),
+            ),
+            (
+                "double_double_nmos_switched",
+                CompParams(
+                    diffpair_w=74,
+                    tail_w=10,
+                    rst_w=16,
+                    latch_on_w=50,
+                    latch_init_w=66,
+                    srlatch_n_w=8,
+                    srlatch_p_w=16,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.NMOS,
+                    preamp_bias=Bias.SWITCHED,
+                    comp_stages=Stages.DOUBLE,
+                    latch_inner_on_xtors=State.SIGNAL,
+                    latch_outer_on_xtors=State.OMIT,
+                    latch_inner_init_xtors=State.CLOCK,
+                    latch_outer_init_xtors=State.OMIT,
+                ),
+            ),
+            (
+                "fabricated_double_pmos_dynamic",
+                CompParams(
+                    diffpair_w=37,
+                    tail_w=5,
+                    rst_w=8,
+                    latch_on_w=25,
+                    latch_init_w=33,
+                    srlatch_n_w=4,
+                    srlatch_p_w=8,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.PMOS,
+                    preamp_bias=Bias.DYNAMIC,
+                    comp_stages=Stages.DOUBLE,
+                    latch_inner_on_xtors=State.CLOCK,
+                    latch_outer_on_xtors=State.SIGNAL,
+                    latch_inner_init_xtors=State.SIGNAL,
+                    latch_outer_init_xtors=State.OMIT,
+                ),
+            ),
+            (
+                "half_double_nmos_dynamic",
+                CompParams(
+                    diffpair_w=19,
+                    tail_w=3,
+                    rst_w=4,
+                    latch_on_w=13,
+                    latch_init_w=17,
+                    srlatch_n_w=2,
+                    srlatch_p_w=4,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.NMOS,
+                    preamp_bias=Bias.DYNAMIC,
+                    comp_stages=Stages.DOUBLE,
+                    latch_inner_on_xtors=State.SIGNAL,
+                    latch_outer_on_xtors=State.CLOCK,
+                    latch_inner_init_xtors=State.CLOCK,
+                    latch_outer_init_xtors=State.CLOCK,
+                ),
+            ),
+            (
+                "double_double_pmos_switched",
+                CompParams(
+                    diffpair_w=74,
+                    tail_w=10,
+                    rst_w=16,
+                    latch_on_w=50,
+                    latch_init_w=66,
+                    srlatch_n_w=8,
+                    srlatch_p_w=16,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                    preamp_diff_xtors=MosType.PMOS,
+                    preamp_bias=Bias.SWITCHED,
+                    comp_stages=Stages.DOUBLE,
+                    latch_inner_on_xtors=State.CLOCK,
+                    latch_outer_on_xtors=State.CLOCK,
+                    latch_inner_init_xtors=State.SIGNAL,
+                    latch_outer_init_xtors=State.SIGNAL,
+                ),
+            ),
+        )
+        cases = [(name, name, 0, "diagnostic", comp) for name, comp in cases]
+    else:
+        topologies = []
+        for diff_type in (MosType.NMOS, MosType.PMOS):
+            for bias in Bias:
+                for stages in Stages:
+                    for inner_on in State:
+                        for outer_on in State:
+                            for inner_init in (State.CLOCK, State.SIGNAL):
+                                for outer_init in (State.OMIT, State.CLOCK, State.SIGNAL):
+                                    topology = {
+                                        "comp_stages": stages,
+                                        "preamp_diff_xtors": diff_type,
+                                        "preamp_bias": bias,
+                                        "latch_inner_on_xtors": inner_on,
+                                        "latch_outer_on_xtors": outer_on,
+                                        "latch_inner_init_xtors": inner_init,
+                                        "latch_outer_init_xtors": outer_init,
+                                    }
+                                    probe = CompParams(
+                                        diffpair_w=37,
+                                        tail_w=5,
+                                        rst_w=8,
+                                        latch_on_w=25,
+                                        latch_init_w=33,
+                                        srlatch_n_w=4,
+                                        srlatch_p_w=8,
+                                        diffpair_l=5,
+                                        tail_l=13,
+                                        rst_l=1,
+                                        latch_on_l=6,
+                                        latch_init_l=17,
+                                        **topology,
+                                    )
+                                    if is_valid_comp_params(probe):
+                                        topologies.append(topology)
+        if len(topologies) != 148:
+            raise RuntimeError(f"expected 148 valid comparator topologies, got {len(topologies)}")
+
+        cases = []
+        for topology_index, topology in enumerate(topologies):
+            for size_profile, widths in (
+                (
+                    "half",
+                    {
+                        "diffpair_w": 19,
+                        "tail_w": 3,
+                        "rst_w": 4,
+                        "latch_on_w": 13,
+                        "latch_init_w": 17,
+                        "srlatch_n_w": 2,
+                        "srlatch_p_w": 4,
+                    },
+                ),
+                (
+                    "double",
+                    {
+                        "diffpair_w": 74,
+                        "tail_w": 10,
+                        "rst_w": 16,
+                        "latch_on_w": 50,
+                        "latch_init_w": 66,
+                        "srlatch_n_w": 8,
+                        "srlatch_p_w": 16,
+                    },
+                ),
+            ):
+                comp = CompParams(
+                    **topology,
+                    **widths,
+                    diffpair_l=5,
+                    tail_l=13,
+                    rst_l=1,
+                    latch_on_l=6,
+                    latch_init_l=17,
+                )
+                digest = hashlib.sha256(repr(comp).encode()).hexdigest()[:8]
+                candidate_id = f"c{topology_index:03d}_{size_profile}_{digest}"
+                topology_label = "-".join(
+                    (
+                        comp.preamp_diff_xtors.name.lower(),
+                        comp.preamp_bias.name.lower(),
+                        comp.comp_stages.name.lower(),
+                        f"inner-on-{comp.latch_inner_on_xtors.name.lower()}",
+                        f"outer-on-{comp.latch_outer_on_xtors.name.lower()}",
+                        f"inner-init-{comp.latch_inner_init_xtors.name.lower()}",
+                        f"outer-init-{comp.latch_outer_init_xtors.name.lower()}",
+                    )
+                )
+                cases.append(
+                    (
+                        candidate_id,
+                        f"{topology_label}, {size_profile}",
+                        topology_index,
+                        size_profile,
+                        comp,
+                    )
+                )
+        baseline = CompParams(
+            diffpair_w=37,
+            tail_w=5,
+            rst_w=8,
+            latch_on_w=25,
+            latch_init_w=33,
+            srlatch_n_w=4,
+            srlatch_p_w=8,
+            diffpair_l=5,
+            tail_l=13,
+            rst_l=1,
+            latch_on_l=6,
+            latch_init_l=17,
+        )
+        baseline_topology = {
+            "comp_stages": baseline.comp_stages,
+            "preamp_diff_xtors": baseline.preamp_diff_xtors,
+            "preamp_bias": baseline.preamp_bias,
+            "latch_inner_on_xtors": baseline.latch_inner_on_xtors,
+            "latch_outer_on_xtors": baseline.latch_outer_on_xtors,
+            "latch_inner_init_xtors": baseline.latch_inner_init_xtors,
+            "latch_outer_init_xtors": baseline.latch_outer_init_xtors,
+        }
+        cases.append(
+            (
+                "frida1_fabricated_baseline",
+                "FRIDA-1 fabricated comparator dimensions",
+                topologies.index(baseline_topology),
+                "fabricated",
+                baseline,
+            )
+        )
+        if len(cases) != 297 or len({case[0] for case in cases}) != 297:
+            raise RuntimeError("comparator campaign must contain 297 unique cases")
+
+    failures: dict[str, str] = {}
+    with ProcessPoolExecutor(max_workers=24, mp_context=get_context("spawn")) as executor:
+        futures = {
+            executor.submit(
+                _run_comp_sim,
+                run_dir / candidate_id,
+                CompTbParams(
+                    comp=comp,
+                    **({"vin_cm_values_v": (0.8,), "vin_diff_values_v": (0.0,), "conversions": 1} if check else {}),
+                ),
+                candidate_id=candidate_id,
+                candidate_label=label,
+                topology_index=topology_index,
+                size_profile=size_profile,
+                check=check,
+            ): candidate_id
+            for candidate_id, label, topology_index, size_profile, comp in cases
+        }
+        for future in as_completed(futures):
+            candidate_id = futures[future]
+            try:
+                future.result()
+            except Exception as error:  # noqa: BLE001 - report every independent case failure
+                failures[candidate_id] = repr(error)
+    if failures:
+        failure_path = run_dir / "failures.json"
+        failure_path.write_text(json.dumps(failures, indent=2) + "\n")
+        raise RuntimeError(f"{len(failures)} comparator cases failed; see {failure_path}")
+    return run_dir
+
+
+def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
+    """Run the FRIDA-1 comparator S-curve, or one noise-free diagnostic decision."""
 
     params = CompTbParams(
         comp=CompParams(
@@ -428,317 +569,18 @@ def frida65_baseline_noise(run_dir: Path) -> Path:
             rst_l=1,
             latch_on_l=6,
             latch_init_l=17,
-        )
-    )
-    baseline_topology_index = 37
-    h.pdk.set_default(tsmc65.pdk_logic)
-    tb = CompTb(params)
-    h.pdk.compile(tb)
-    tstop_s = (
-        len(params.vin_cm_values_v)
-        * len(params.vin_diff_values_v)
-        * params.conversions
-        * (float(params.reset_time_s) + float(params.evaluation_time_s))
-    )
-    simulation = hs.Sim(
-        tb=tb,
-        attrs=[
-            site.install.include(h.pdk.Corner.TYP),
-            site.install.include_pre_simulation(),
-            hs.Options(name="temp", value=25.0),
-            hs.Options(name="save", value="selected"),
-            hs.Save([raw for canonical, raw in comp_signal_names().items() if canonical != "time_s"]),
-            hs.Tran(
-                tstop=tstop_s,
-                name="tran",
-                noise=True,
-                options={
-                    "strobeperiod": 500e-12,
-                    "strobeoutput": "strobeonly",
-                    "noisefmin": 1.0 / tstop_s,
-                    "noisefmax": "25G",
-                    "noiseseed": 1,
-                },
-            ),
-        ],
-    )
-    started = time.perf_counter()
-    # HDL21 types cover every result format and analysis; this call requests
-    # SIM_DATA containing one transient.
-    result = cast(
-        SimResult,
-        simulation.run(
-            SimOptions(
-                simulator=SupportedSimulators.SPECTRE,
-                fmt=ResultFormat.SIM_DATA,
-                rundir=run_dir,
-                simulator_args=("+preset=mx", "+mt=1", "+lqtimeout", "3600", "+escchars", "+log", "spectre.log"),
-            )
         ),
+        **({"vin_cm_values_v": (0.8,), "vin_diff_values_v": (0.0,), "conversions": 1} if check else {}),
     )
-    runtime_s = time.perf_counter() - started
-    transient = cast(TranResult, result[AnalysisType.TRAN])
-    measurement = convert_spectre_comp_to_measurement(
-        transient.data,
-        params=params,
-        raw_path=run_dir / "netlist.raw",
-        signal_names=comp_signal_names(),
+    return _run_comp_sim(
+        run_dir,
+        params,
         candidate_id="frida1_fabricated_baseline",
         candidate_label="FRIDA-1 fabricated comparator dimensions",
-        topology_index=baseline_topology_index,
+        topology_index=37,
         size_profile="fabricated",
-        compiled_tb=tb,
-        spectre_runtime_s=runtime_s,
+        check=check,
     )
-    write_measurement(run_dir / "result.h5", measurement)
-    return run_dir
-
-
-def frida65_candidates(run_dir: Path) -> Path:
-    """Run all 297 reviewed comparator topology and sizing candidates."""
-
-    topologies = []
-    for diff_type in (MosType.NMOS, MosType.PMOS):
-        for bias in Bias:
-            for stages in Stages:
-                for inner_on in State:
-                    for outer_on in State:
-                        for inner_init in (State.CLOCK, State.SIGNAL):
-                            for outer_init in (State.OMIT, State.CLOCK, State.SIGNAL):
-                                topology = {
-                                    "comp_stages": stages,
-                                    "preamp_diff_xtors": diff_type,
-                                    "preamp_bias": bias,
-                                    "latch_inner_on_xtors": inner_on,
-                                    "latch_outer_on_xtors": outer_on,
-                                    "latch_inner_init_xtors": inner_init,
-                                    "latch_outer_init_xtors": outer_init,
-                                }
-                                probe = CompParams(
-                                    diffpair_w=37,
-                                    tail_w=5,
-                                    rst_w=8,
-                                    latch_on_w=25,
-                                    latch_init_w=33,
-                                    srlatch_n_w=4,
-                                    srlatch_p_w=8,
-                                    diffpair_l=5,
-                                    tail_l=13,
-                                    rst_l=1,
-                                    latch_on_l=6,
-                                    latch_init_l=17,
-                                    **topology,
-                                )
-                                if is_valid_comp_params(probe):
-                                    topologies.append(topology)
-    if len(topologies) != 148:
-        raise RuntimeError(f"expected 148 valid comparator topologies, got {len(topologies)}")
-
-    cases = []
-    for topology_index, topology in enumerate(topologies):
-        for size_profile, widths in (
-            (
-                "half",
-                {
-                    "diffpair_w": 19,
-                    "tail_w": 3,
-                    "rst_w": 4,
-                    "latch_on_w": 13,
-                    "latch_init_w": 17,
-                    "srlatch_n_w": 2,
-                    "srlatch_p_w": 4,
-                },
-            ),
-            (
-                "double",
-                {
-                    "diffpair_w": 74,
-                    "tail_w": 10,
-                    "rst_w": 16,
-                    "latch_on_w": 50,
-                    "latch_init_w": 66,
-                    "srlatch_n_w": 8,
-                    "srlatch_p_w": 16,
-                },
-            ),
-        ):
-            comp = CompParams(
-                **topology,
-                **widths,
-                diffpair_l=5,
-                tail_l=13,
-                rst_l=1,
-                latch_on_l=6,
-                latch_init_l=17,
-            )
-            digest = hashlib.sha256(repr(comp).encode()).hexdigest()[:8]
-            candidate_id = f"c{topology_index:03d}_{size_profile}_{digest}"
-            topology_label = "-".join(
-                (
-                    comp.preamp_diff_xtors.name.lower(),
-                    comp.preamp_bias.name.lower(),
-                    comp.comp_stages.name.lower(),
-                    f"inner-on-{comp.latch_inner_on_xtors.name.lower()}",
-                    f"outer-on-{comp.latch_outer_on_xtors.name.lower()}",
-                    f"inner-init-{comp.latch_inner_init_xtors.name.lower()}",
-                    f"outer-init-{comp.latch_outer_init_xtors.name.lower()}",
-                )
-            )
-            cases.append(
-                (
-                    candidate_id,
-                    f"{topology_label}, {size_profile}",
-                    topology_index,
-                    size_profile,
-                    comp,
-                )
-            )
-    baseline = CompParams(
-        diffpair_w=37,
-        tail_w=5,
-        rst_w=8,
-        latch_on_w=25,
-        latch_init_w=33,
-        srlatch_n_w=4,
-        srlatch_p_w=8,
-        diffpair_l=5,
-        tail_l=13,
-        rst_l=1,
-        latch_on_l=6,
-        latch_init_l=17,
-    )
-    baseline_topology = {
-        "comp_stages": baseline.comp_stages,
-        "preamp_diff_xtors": baseline.preamp_diff_xtors,
-        "preamp_bias": baseline.preamp_bias,
-        "latch_inner_on_xtors": baseline.latch_inner_on_xtors,
-        "latch_outer_on_xtors": baseline.latch_outer_on_xtors,
-        "latch_inner_init_xtors": baseline.latch_inner_init_xtors,
-        "latch_outer_init_xtors": baseline.latch_outer_init_xtors,
-    }
-    cases.append(
-        (
-            "frida1_fabricated_baseline",
-            "FRIDA-1 fabricated comparator dimensions",
-            topologies.index(baseline_topology),
-            "fabricated",
-            baseline,
-        )
-    )
-    if len(cases) != 297 or len({case[0] for case in cases}) != 297:
-        raise RuntimeError("comparator campaign must contain 297 unique cases")
-
-    h.pdk.set_default(tsmc65.pdk_logic)
-    failures: dict[str, str] = {}
-    next_case = iter(cases)
-    exhausted = False
-    pending = {}
-    with ThreadPoolExecutor(max_workers=18) as executor:
-        while pending or not exhausted:
-            while len(pending) < 18 and not exhausted:
-                try:
-                    candidate_id, label, topology_index, size_profile, comp = next(next_case)
-                except StopIteration:
-                    exhausted = True
-                    break
-                try:
-                    case_dir = run_dir / candidate_id
-                    case_dir.mkdir()
-                    params = CompTbParams(comp=comp)
-                    tb = CompTb(params)
-                    h.pdk.compile(tb)
-                    tstop_s = (
-                        len(params.vin_cm_values_v)
-                        * len(params.vin_diff_values_v)
-                        * params.conversions
-                        * (float(params.reset_time_s) + float(params.evaluation_time_s))
-                    )
-                    simulation = hs.Sim(
-                        tb=tb,
-                        attrs=[
-                            site.install.include(h.pdk.Corner.TYP),
-                            site.install.include_pre_simulation(),
-                            hs.Options(name="temp", value=25.0),
-                            hs.Options(name="save", value="selected"),
-                            hs.Save([raw for canonical, raw in comp_signal_names().items() if canonical != "time_s"]),
-                            hs.Tran(
-                                tstop=tstop_s,
-                                name="tran",
-                                noise=True,
-                                options={
-                                    "strobeperiod": 500e-12,
-                                    "strobeoutput": "strobeonly",
-                                    "noisefmin": 1.0 / tstop_s,
-                                    "noisefmax": "25G",
-                                    "noiseseed": 1,
-                                },
-                            ),
-                        ],
-                    )
-                    started = time.perf_counter()
-                    future = executor.submit(
-                        simulation.run,
-                        SimOptions(
-                            simulator=SupportedSimulators.SPECTRE,
-                            fmt=ResultFormat.SIM_DATA,
-                            rundir=case_dir,
-                            simulator_args=(
-                                "+preset=mx",
-                                "+mt=1",
-                                "+lqtimeout",
-                                "3600",
-                                "+escchars",
-                                "+log",
-                                "spectre.log",
-                            ),
-                        ),
-                    )
-                    pending[future] = (
-                        candidate_id,
-                        label,
-                        topology_index,
-                        size_profile,
-                        params,
-                        tb,
-                        case_dir,
-                        started,
-                    )
-                except Exception as error:  # noqa: BLE001 - collect every candidate failure
-                    failures[candidate_id] = repr(error)
-            if not pending:
-                continue
-            completed, _remaining = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                candidate_id, label, topology_index, size_profile, params, tb, case_dir, started = pending.pop(future)
-                try:
-                    # HDL21 types cover every result format and analysis; this
-                    # future returns SIM_DATA containing one transient.
-                    result = cast(SimResult, future.result())
-                    runtime_s = time.perf_counter() - started
-                    transient = cast(TranResult, result[AnalysisType.TRAN])
-                    measurement = convert_spectre_comp_to_measurement(
-                        transient.data,
-                        params=params,
-                        raw_path=case_dir / "netlist.raw",
-                        signal_names=comp_signal_names(),
-                        candidate_id=candidate_id,
-                        candidate_label=label,
-                        topology_index=topology_index,
-                        size_profile=size_profile,
-                        compiled_tb=tb,
-                        spectre_runtime_s=runtime_s,
-                    )
-                    write_measurement(case_dir / "result.h5", measurement)
-                except Exception as error:  # noqa: BLE001 - collect every candidate failure
-                    failures[candidate_id] = repr(error)
-                finally:
-                    CompTb.Cache.reset()
-                    Comp.Cache.reset()
-    if failures:
-        failure_path = run_dir / "failures.json"
-        failure_path.write_text(json.dumps(failures, indent=2) + "\n")
-        raise RuntimeError(f"{len(failures)} comparator cases failed; see {failure_path}")
-    return run_dir
 
 
 def main() -> None:
@@ -747,18 +589,16 @@ def main() -> None:
     targets = {
         target.__name__: target
         for target in (
-            frida65_baseline_check,
-            frida65_candidate_check,
-            frida65_baseline_noise,
-            frida65_candidates,
+            hdl21_comp_perf_vs_size,
+            frida1_fixed_input_noise,
         )
     }
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", nargs="?", choices=sorted(targets))
+    parser.add_argument("target", nargs="?", choices=list(targets))
     args = parser.parse_args()
     if args.target is None:
         print("Available comparator simulation targets:")
-        for name in sorted(targets):
+        for name in list(targets):
             print(f"  {name}")
         return
     run_dir = (

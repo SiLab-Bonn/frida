@@ -10,21 +10,21 @@ repos:
         entry: uvx --from ruff==0.16.6 ruff check --fix
         language: system
         types: [python]
-        files: ^flow/(analysis|scans|adc|cdac|comp|samp)/.*\.py$
+        files: ^flow/(analysis|scans|adc|cdac|comp|samp|circuit)/.*\.py$
       - id: ruff-format
         name: ruff format
         entry: uvx --from ruff==0.16.6 ruff format
         language: system
         types: [python]
-        files: ^flow/(analysis|scans|adc|cdac|comp|samp)/.*\.py$
+        files: ^flow/(analysis|scans|adc|cdac|comp|samp|circuit)/.*\.py$
 
       - id: ty-flow
         name: ty flow type check
         entry: >-
           uv run ty check flow/analysis flow/scans flow/adc flow/cdac flow/comp
-          flow/samp
+          flow/samp flow/circuit
         language: system
-        files: ^flow/(analysis|scans|adc|cdac|comp|samp)/.*\.py$
+        files: ^flow/(analysis|scans|adc|cdac|comp|samp|circuit)/.*\.py$
         pass_filenames: false
 
       - id: rumdl-markdown
