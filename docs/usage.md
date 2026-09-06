@@ -338,6 +338,23 @@ uv run python -m flow.adc.sim frida2_fixed_input_noise
 uv run python -m flow.analysis.runner adc_pex_flavor_paths --inputs /path/to/completed/campaign
 ```
 
+The current FRIDA-2 fixed-input recipe tests extended comparator evaluation:
+relative to each COMP rising edge, its eight 0.625 ns slots are:
+
+```text
+COMP   11111100
+LOGIC  00000010
+```
+
+COMP falls with LOGIC rising at the sequencer. LOGIC falls one slot before
+the next COMP rising edge. Sampling, COMP rising edges, LOGIC rising edges,
+the initialization pulse, noise settings, and the 160 ns record period remain
+unchanged from the September 5 baseline. This is an experimental timing
+setting, not timing signoff: internal clock skew, decision capture, minimum
+pulse widths, comparator reset recovery and DAC settling still need checking.
+FRIDA-1 and other targets retain their existing timing. `input.json` records
+all four sequence patterns and phase offsets for each new run.
+
 For every completed flavor, this analysis writes the 17-bit/12-bit code list,
 the all-conversion decision-path density, and C0/C7/C15 settling
 plots showing comparator outputs, DAC states/drivers, and top-plate residuals

@@ -384,6 +384,13 @@ def _run_adc_sim(
         "check": check,
         "transient_noise": noise and not check,
         "expected_historical_disconnect": expected_disconnect,
+        "sequencer": {
+            name: {
+                "pattern": getattr(params, f"seq_{name}_pattern"),
+                "phase_delay_symbols": float(getattr(params, f"seq_{name}_phase_delay_symbols")),
+            }
+            for name in ("init", "samp", "comp", "logic")
+        },
     }
     if pex_netlist is not None:
         if not pex_netlist.is_file() or not pex_netlist.stat().st_size:
@@ -711,7 +718,13 @@ def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False) -> Path:
 
 
 def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
-    """Run all three connected radix-17 stacks at 10 MS/s, 100 conversions each."""
+    """Run three radix-17 stacks with COMP reset aligned to the one-slot LOGIC pulse.
+
+    Keep sampling, COMP rising edges, and LOGIC rising edges unchanged from
+    the September 5 campaign. Six of eight slots now evaluate; LOGIC is high
+    for the first reset slot and low one slot before the next comparison.
+    Edges coincide at the sequencer, not necessarily at the internal clocks.
+    """
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
     with ProcessPoolExecutor(max_workers=3, mp_context=get_context("spawn")) as executor:
@@ -725,6 +738,8 @@ def frida2_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
                 symbol_rate=1.6 * G,
                 conversions=1 if check else 100,
                 vin_diff=h.Vdc.Params(dc=0.05),
+                seq_comp_pattern="0" * 36 + "11111100" * 17 + "0" * 84,
+                seq_logic_pattern="00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
                 seq_logic_phase_delay_symbols=2.0,
             )
             futures.append(

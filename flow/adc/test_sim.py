@@ -8,6 +8,7 @@ from threading import Barrier
 
 import hdl21 as h
 import hdl21.sim as hs
+import numpy as np
 import pytest
 
 from flow.adc.subckt import (
@@ -186,6 +187,21 @@ def test_fixed_input_campaigns(family, count, check, tmp_path, monkeypatch):
         assert options["pex_netlist"].parent.name.startswith("20260905_")
         assert options.get("expected_disconnect", False) == (family == "frida1" and "2layer" in directory.name)
         assert sum(sim.get_cdac_weights(params.dut.cdac)) == (2303 if "radix20" in directory.name else 2047)
+        if family == "frida2":
+            comp = np.array([int(bit) for bit in params.seq_comp_pattern])
+            logic = np.roll([int(bit) for bit in params.seq_logic_pattern], int(params.seq_logic_phase_delay_symbols))
+            comp_rises = np.flatnonzero(np.diff(comp) == 1) + 1
+            comp_falls = np.flatnonzero(np.diff(comp) == -1) + 1
+            logic_rises = (np.flatnonzero(np.diff(logic) == 1) + 1)[1:]
+            logic_falls = (np.flatnonzero(np.diff(logic) == -1) + 1)[1:]
+            assert len(comp) == len(logic) == len(params.seq_init_pattern) == 256
+            np.testing.assert_array_equal(comp_rises, 36 + 8 * np.arange(17))
+            np.testing.assert_array_equal(comp_falls, comp_rises + 6)
+            np.testing.assert_array_equal(logic_rises, comp_falls[:-1])
+            np.testing.assert_array_equal(logic_falls, logic_rises + 1)
+            np.testing.assert_array_equal(comp_rises[1:] - logic_falls, np.ones(16))
+            assert params.seq_samp_pattern == sim.AdcTbParams().seq_samp_pattern
+            assert params.seq_init_pattern == sim.AdcTbParams().seq_init_pattern
 
 
 @pytest.mark.parametrize("family,count", (("frida1", 4), ("frida2", 3)))
