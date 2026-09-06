@@ -573,7 +573,7 @@ def hdl21_transfer_curve(run_dir: Path, *, check: bool = False) -> Path:
 
 
 def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
-    """Run all four historical flavors at 10 MS/s, 100 conversions each."""
+    """Run four historical flavors with the same six-slot COMP/one-slot LOGIC experiment as FRIDA-2."""
 
     root = Path(__file__).resolve().parents[2] / "build/layout/adc"
     with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as executor:
@@ -592,6 +592,8 @@ def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False) -> Path:
                     symbol_rate=1.6 * G,
                     conversions=1 if check else 100,
                     vin_diff=h.Vdc.Params(dc=0.05),
+                    seq_comp_pattern="0" * 36 + "11111100" * 17 + "0" * 84,
+                    seq_logic_pattern="00000000" + "00001111" + "00000000" * 3 + "10000000" * 16 + "00000000" * 11,
                     seq_logic_phase_delay_symbols=2.0,
                 )
                 futures.append(
