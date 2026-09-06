@@ -227,14 +227,14 @@ def test_frida2_rc_waveforms_use_device_terminal_nodes() -> None:
     from flow.circuit.results import adc_signal_names
 
     names = adc_signal_names("frida2", pex_cell="adc_12b_17step")
-    legacy = adc_signal_names("frida65a", pex_cell="adc_1layer_radix17")
+    legacy = adc_signal_names("frida1", pex_cell="adc_1layer_radix17")
     assert names["vdac_p_v"] == "xtop.xadc.N_VDAC_P_XXsampswitch_p/MM0_d"
     assert names["dac_state_p_c0_v"].startswith("xtop.xadc.N_DAC_STATE_P_MAIN<0>_")
     assert legacy["dac_state_p_c0_v"].startswith("xtop.xadc.N_DAC_STATE_P_MAIN<15>_")
     assert names["dac_state_p_c0_v"].split("/", 1)[1] == legacy["dac_state_p_c0_v"].split("/", 1)[1]
 
 
-@pytest.mark.parametrize("view", ("frida65a", "frida2"))
+@pytest.mark.parametrize("view", ("frida1", "frida2"))
 def test_extracted_waveforms_cover_every_dac_stage_and_comparator_nodes(view):
     from flow.circuit.results import adc_signal_names
 

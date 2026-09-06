@@ -21,7 +21,7 @@ class AdcScanParams:
     tb = h.Param(
         dtype=_AdcTbParams,
         desc="ADC stimulus and digital configuration",
-        default=_AdcTbParams(view="frida65a"),
+        default=_AdcTbParams(view="frida1"),
     )
     temperature_c = h.Param(dtype=h.Scalar, desc="Test temperature in degrees Celsius", default=25.0)
     board_id = h.Param(dtype=str | None, desc="Physical board identifier", default=None)
@@ -51,8 +51,8 @@ def validate_params(params: AdcScanParams) -> None:
     if not isinstance(params, AdcScanParams):
         raise TypeError("physical scans require AdcScanParams")
     tb = params.tb
-    if tb.view != "frida65a":
-        raise ValueError("physical scans require tb.view='frida65a'")
+    if tb.view != "frida1":
+        raise ValueError("physical scans require tb.view='frida1'")
     if not math.isfinite(float(params.temperature_c)):
         raise ValueError("temperature_c must be finite")
     if not math.isfinite(float(params.settling_time_s)) or float(params.settling_time_s) < 0.0:
@@ -200,12 +200,12 @@ def build_adc_variants(
             ),
         )
         active_adc_mask = tuple(int(index == adc_index) for index in reversed(range(16)))
-        template = _AdcTbParams(view="frida65a", dut=dut)
+        template = _AdcTbParams(view="frida1", dut=dut)
         for logic_offset in logic_offsets_symbols:
             for conversion_rate in active_conversion_rates_hz:
                 params = AdcScanParams(
                     tb=_AdcTbParams(
-                        view="frida65a",
+                        view="frida1",
                         dut=dut,
                         symbol_rate=convert_sample_rate_to_baud(template, float(conversion_rate)),
                         conversions=conversions,

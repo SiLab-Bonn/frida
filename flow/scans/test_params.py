@@ -16,7 +16,7 @@ from flow.scans.params import (
 
 
 def test_default_params_are_valid_and_immutable() -> None:
-    params = AdcScanParams(tb=AdcTbParams(view="frida65a"))
+    params = AdcScanParams(tb=AdcTbParams(view="frida1"))
 
     validate_params(params)
     assert isinstance(params.tb.vin_diff, h.Vdc.Params)
@@ -115,9 +115,9 @@ def test_convert_sample_rate_to_baud_uses_active_pattern_span() -> None:
 
 
 def test_validation_rejects_invalid_configuration_relationships() -> None:
-    incomplete_measurement = AdcScanParams(tb=AdcTbParams(view="frida65a"), board_id="00")
-    invalid_bus = AdcScanParams(tb=AdcTbParams(view="frida65a", dac_astate_p=(0,) * 15 + (2,)))
-    unequal_patterns = AdcScanParams(tb=AdcTbParams(view="frida65a", seq_logic_pattern="01"))
+    incomplete_measurement = AdcScanParams(tb=AdcTbParams(view="frida1"), board_id="00")
+    invalid_bus = AdcScanParams(tb=AdcTbParams(view="frida1", dac_astate_p=(0,) * 15 + (2,)))
+    unequal_patterns = AdcScanParams(tb=AdcTbParams(view="frida1", seq_logic_pattern="01"))
 
     with pytest.raises(ValueError, match="must be set together"):
         validate_params(incomplete_measurement)

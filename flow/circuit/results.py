@@ -39,7 +39,7 @@ def adc_signal_names(view: str, *, pex_cell: str | None = None) -> dict[str, str
         "vdd_d_i": "xtop.vvdd_d:p",
         "vdd_dac_i": "xtop.vvdd_dac:p",
     }
-    if view in ("frida65a", "frida2"):
+    if view in ("frida1", "frida2"):
         # FRIDA-1 and FRIDA-2 both use distributed xACT RC extraction. Save
         # the device-terminal nodes; lumped logical net names do not exist.
         names = {

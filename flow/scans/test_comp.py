@@ -237,10 +237,10 @@ def test_default_comparator_campaign_cardinality_selection_and_point_uniqueness(
     ("params", "message"),
     (
         (
-            AdcScanParams(tb=AdcTbParams(view="frida65a"), campaign="comp_sampling_noise"),
+            AdcScanParams(tb=AdcTbParams(view="frida1"), campaign="comp_sampling_noise"),
             "requested_dac_rail_percent",
         ),
-        (AdcScanParams(tb=AdcTbParams(view="frida65a"), settling_time_s=-1.0), "non-negative"),
+        (AdcScanParams(tb=AdcTbParams(view="frida1"), settling_time_s=-1.0), "non-negative"),
     ),
 )
 def test_comparator_scan_axis_validation_rejects_incomplete_params(

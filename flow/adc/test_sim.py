@@ -11,12 +11,12 @@ import hdl21.sim as hs
 import pytest
 
 from flow.adc.subckt import (
+    Frida1_1LayerRadix17PexAdc,
+    Frida1_1LayerRadix20PexAdc,
+    Frida1_2LayerRadix17PexAdc,
+    Frida1_2LayerRadix20PexAdc,
     Frida1PexAdc,
     Frida2PexAdc,
-    Frida65a1LayerRadix20PexAdc,
-    Frida65a2LayerRadix17PexAdc,
-    Frida65a2LayerRadix20PexAdc,
-    Frida65aPexAdc,
 )
 
 from . import sim
@@ -34,7 +34,7 @@ def test_adc_testbench_parameters_are_simulation_only() -> None:
     assert not hasattr(params, "vdd_io")
 
 
-@pytest.mark.parametrize("view", ("frida65a", "hdl21gen"))
+@pytest.mark.parametrize("view", ("frida1", "hdl21gen"))
 def test_adc_testbench_generates_each_view(view: str) -> None:
     tb = sim.AdcTb(sim.AdcTbParams(view=view, conversions=1))
 
@@ -75,10 +75,10 @@ def test_adc_transfer_sweep_must_match_conversion_count() -> None:
 
 def test_extracted_adc_keeps_calibre_port_order() -> None:
     modules = (
-        Frida65aPexAdc,
-        Frida65a1LayerRadix20PexAdc,
-        Frida65a2LayerRadix17PexAdc,
-        Frida65a2LayerRadix20PexAdc,
+        Frida1_1LayerRadix17PexAdc,
+        Frida1_1LayerRadix20PexAdc,
+        Frida1_2LayerRadix17PexAdc,
+        Frida1_2LayerRadix20PexAdc,
         Frida2PexAdc,
         Frida1PexAdc,
     )
@@ -100,14 +100,14 @@ def test_extracted_adc_keeps_calibre_port_order() -> None:
     ),
 )
 def test_extracted_adc_selects_requested_pex_cell(pex_cell: str) -> None:
-    tb = sim.AdcTb(sim.AdcTbParams(view="frida65a", pex_cell=pex_cell, conversions=1))
+    tb = sim.AdcTb(sim.AdcTbParams(view="frida1", pex_cell=pex_cell, conversions=1))
 
     assert tb.xadc.of.module.name == pex_cell
 
 
 def test_pex_cell_rejects_unknown_and_generated_views() -> None:
-    with pytest.raises(ValueError, match="unsupported FRIDA65A PEX cell"):
-        sim.AdcTb(sim.AdcTbParams(view="frida65a", pex_cell="adc_unknown", conversions=1))
+    with pytest.raises(ValueError, match="unsupported FRIDA-1 PEX cell"):
+        sim.AdcTb(sim.AdcTbParams(view="frida1", pex_cell="adc_unknown", conversions=1))
     with pytest.raises(ValueError, match="applies only to extracted views"):
         sim.AdcTb(sim.AdcTbParams(view="hdl21gen", pex_cell="adc_1layer_radix17", conversions=1))
 
@@ -115,7 +115,7 @@ def test_pex_cell_rejects_unknown_and_generated_views() -> None:
 def test_c0_rename_preserves_the_physical_initialization_voltages() -> None:
     for bus in ("dac_astate_p", "dac_bstate_p", "dac_astate_n", "dac_bstate_n"):
         pattern = tuple(int(stage in (0, 3, 8, 14)) for stage in range(16))
-        old = sim.AdcTb(sim.AdcTbParams(view="frida65a", pex_cell="adc_12b_17step", **{bus: pattern}))
+        old = sim.AdcTb(sim.AdcTbParams(view="frida1", pex_cell="adc_12b_17step", **{bus: pattern}))
         new = sim.AdcTb(sim.AdcTbParams(view="frida2", pex_cell="adc_12b_17step", **{bus: pattern}))
         assert old.xadc.of.module is Frida1PexAdc
         assert new.xadc.of.module is Frida2PexAdc
@@ -126,7 +126,7 @@ def test_c0_rename_preserves_the_physical_initialization_voltages() -> None:
 
 def test_supply_noise_testbench_repeats_independent_rail_networks() -> None:
     params = sim.AdcTbParams(
-        view="frida65a",
+        view="frida1",
         conversions=1,
         supply_series_resistance_ohm=1.0,
         supply_series_inductance_h=1e-9,
@@ -177,7 +177,7 @@ def test_fixed_input_campaigns(family, count, netlist_only, check, tmp_path, mon
         assert directory.parent == root
         assert params.conversions == (1 if check else 100)
         assert params.pex_cell == "adc_12b_17step"
-        assert params.view == ("frida2" if family == "frida2" else "frida65a")
+        assert params.view == ("frida2" if family == "frida2" else "frida1")
         assert float(params.symbol_rate) == 1.6e9
         assert float(params.vin_diff.dc) == 0.05
         assert float(params.vin_cm.dc) == pytest.approx(0.7)
@@ -238,7 +238,7 @@ def test_other_campaign_recipes(target, count, workers, check, tmp_path, monkeyp
     assert len({directory for directory, *_ in calls}) == count
     for directory, params, options in calls:
         assert options["check"] == check and options["netlist_only"]
-        assert params.view == ("hdl21gen" if target.startswith("hdl21") else "frida65a")
+        assert params.view == ("hdl21gen" if target.startswith("hdl21") else "frida1")
         if "transfer_curve" in target:
             assert params.conversions == 151
             assert params.vin_diff == hs.LinearSweep(start=-0.75, stop=0.75, step=0.01)
@@ -341,11 +341,11 @@ def pex_input(tmp_path):
     return pex
 
 
-@pytest.mark.parametrize("view,threads", (("hdl21gen", 8), ("frida2", 8), ("frida65a", 6)))
+@pytest.mark.parametrize("view,threads", (("hdl21gen", 8), ("frida2", 8), ("frida1", 6)))
 @pytest.mark.parametrize("check", (False, True))
 @pytest.mark.parametrize("netlist_only", (False, True))
 def test_single_executor_modes(view, threads, check, netlist_only, captured_executor, pex_input, tmp_path):
-    if view == "frida65a":
+    if view == "frida1":
         ports = " ".join(port.name for port in Frida1PexAdc.port_list)
         pex_input.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
     params = sim.AdcTbParams(
@@ -439,17 +439,17 @@ def test_executor_rejects_bad_pex(fault, message, captured_executor, pex_input, 
 @pytest.mark.parametrize(
     "view,target,warning,accepted",
     (
-        ("frida65a", "frida1_2layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", True),
-        ("frida65a", "frida1_2layer_radix20", "expected LVS mismatch: disconnected historical MOM layer", True),
-        ("frida65a", "frida1_1layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", False),
+        ("frida1", "frida1_2layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", True),
+        ("frida1", "frida1_2layer_radix20", "expected LVS mismatch: disconnected historical MOM layer", True),
+        ("frida1", "frida1_1layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", False),
         ("frida2", "frida2_2layer_radix17", "expected LVS mismatch: disconnected historical MOM layer", False),
-        ("frida65a", "frida1_2layer_radix17", "unrelated mismatch", False),
+        ("frida1", "frida1_2layer_radix17", "unrelated mismatch", False),
     ),
 )
 def test_historical_lvs_exception_is_narrow(view, target, warning, accepted, captured_executor, pex_input, tmp_path):
     renamed = pex_input.with_name(f"{target}.pex.netlist")
     pex_input.rename(renamed)
-    if view == "frida65a":
+    if view == "frida1":
         ports = " ".join(port.name for port in Frida1PexAdc.port_list)
         renamed.write_text(f"subckt adc_12b_17step ({ports})\ninternal\nends adc_12b_17step\n")
     (tmp_path / "signoff_summary.json").write_text(

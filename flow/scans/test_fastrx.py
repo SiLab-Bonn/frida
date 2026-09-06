@@ -149,7 +149,7 @@ def test_physical_fastrx_matches_scope(
     active_adc_mask = tuple(int(index == ADC_INDEX) for index in reversed(range(16)))
     base_params = AdcScanParams(
         tb=AdcTbParams(
-            view="frida65a",
+            view="frida1",
             dut=dut_params,
             conversions=conversions,
             vin_cm=h.Vdc.Params(dc=VIN_CM_V),

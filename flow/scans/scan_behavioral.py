@@ -31,7 +31,7 @@ from flow.scans.scan_adc import (
 ADC_INDEX = 0
 PARAMS = AdcScanParams(
     tb=AdcTbParams(
-        view="frida65a",
+        view="frida1",
         conversions=1,
         vin_cm=h.Vdc.Params(dc=0.600),
         vin_diff=h.Vdc.Params(dc=0.015),

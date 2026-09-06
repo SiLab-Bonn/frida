@@ -123,7 +123,7 @@ def _build_comp_params(
     symbol_rate_bps = 1.6e9
     params = AdcScanParams(
         tb=AdcTbParams(
-            view="frida65a",
+            view="frida1",
             dut=dut,
             symbol_rate=symbol_rate_bps,
             conversions=conversions,

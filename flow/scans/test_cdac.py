@@ -517,6 +517,6 @@ def test_cdac_preflight_rejects_supply_and_fixed_io_before_hardware(tmp_path) ->
 
 
 def test_cdac_scan_axis_validation_rejects_incomplete_params() -> None:
-    params = AdcScanParams(tb=AdcTbParams(view="frida65a"), campaign="cdac_ab", sampling_mode="hold")
+    params = AdcScanParams(tb=AdcTbParams(view="frida1"), campaign="cdac_ab", sampling_mode="hold")
     with pytest.raises(ValueError, match="requires side, element, and direction"):
         validate_params(params)

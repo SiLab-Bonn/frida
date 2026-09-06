@@ -89,7 +89,7 @@ def spi_params(**overrides) -> AdcScanParams:
         "active_adc_mask": tuple(int(index in (3, 9)) for index in reversed(range(16))),
     }
     tb_config = {
-        "view": "frida65a",
+        "view": "frida1",
         "dac_astate_p": tuple(int(bit) for bit in "1010101010101010"),
         "dac_bstate_p": tuple(int(bit) for bit in "0101010101010101"),
         "dac_astate_n": tuple(int(bit) for bit in "1111000011110000"),

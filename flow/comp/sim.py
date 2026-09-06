@@ -483,8 +483,8 @@ def frida65_baseline_noise(run_dir: Path) -> Path:
         params=params,
         raw_path=run_dir / "netlist.raw",
         signal_names=comp_signal_names(),
-        candidate_id="frida65_fabricated_baseline",
-        candidate_label="FRIDA65A fabricated comparator dimensions",
+        candidate_id="frida1_fabricated_baseline",
+        candidate_label="FRIDA-1 fabricated comparator dimensions",
         topology_index=baseline_topology_index,
         size_profile="fabricated",
         compiled_tb=tb,
@@ -618,8 +618,8 @@ def frida65_candidates(run_dir: Path) -> Path:
     }
     cases.append(
         (
-            "frida65_fabricated_baseline",
-            "FRIDA65A fabricated comparator dimensions",
+            "frida1_fabricated_baseline",
+            "FRIDA-1 fabricated comparator dimensions",
             topologies.index(baseline_topology),
             "fabricated",
             baseline,

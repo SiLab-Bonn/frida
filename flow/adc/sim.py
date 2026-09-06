@@ -20,12 +20,12 @@ from vlsirtools.spice.sim_data import AnalysisType, SimResult, TranResult
 from flow.adc.subckt import (
     Adc,
     AdcParams,
+    Frida1_1LayerRadix17PexAdc,
+    Frida1_1LayerRadix20PexAdc,
+    Frida1_2LayerRadix17PexAdc,
+    Frida1_2LayerRadix20PexAdc,
     Frida1PexAdc,
     Frida2PexAdc,
-    Frida65a1LayerRadix20PexAdc,
-    Frida65a2LayerRadix17PexAdc,
-    Frida65a2LayerRadix20PexAdc,
-    Frida65aPexAdc,
 )
 from flow.cdac import CdacParams, RedunStrat, get_cdac_weights
 
@@ -34,10 +34,10 @@ from flow.cdac import CdacParams, RedunStrat, get_cdac_weights
 class AdcTbParams:
     """Parameters which determine one generated ADC testbench."""
 
-    view = h.Param(dtype=str, desc="ADC implementation: frida65a, frida2, or hdl21gen", default="hdl21gen")
+    view = h.Param(dtype=str, desc="ADC implementation: frida1, frida2, or hdl21gen", default="hdl21gen")
     pex_cell = h.Param(
         dtype=str,
-        desc="Calibre-extracted cell; empty selects adc_1layer_radix17 for frida65a",
+        desc="Calibre-extracted cell; empty selects adc_1layer_radix17 for frida1",
         default="",
     )
     dut = h.Param(
@@ -118,22 +118,22 @@ class AdcTbParams:
 def AdcTb(params: AdcTbParams) -> h.Module:
     """Generate a complete ADC testbench for the selected DUT view."""
 
-    if params.view not in {"frida65a", "frida2", "hdl21gen"}:
+    if params.view not in {"frida1", "frida2", "hdl21gen"}:
         raise ValueError(f"unsupported ADC view {params.view!r}")
     pex_adcs = {
-        "": Frida65aPexAdc,
-        "adc_1layer_radix17": Frida65aPexAdc,
-        "adc_1layer_radix20": Frida65a1LayerRadix20PexAdc,
-        "adc_2layer_radix17": Frida65a2LayerRadix17PexAdc,
-        "adc_2layer_radix20": Frida65a2LayerRadix20PexAdc,
+        "": Frida1_1LayerRadix17PexAdc,
+        "adc_1layer_radix17": Frida1_1LayerRadix17PexAdc,
+        "adc_1layer_radix20": Frida1_1LayerRadix20PexAdc,
+        "adc_2layer_radix17": Frida1_2LayerRadix17PexAdc,
+        "adc_2layer_radix20": Frida1_2LayerRadix20PexAdc,
         "adc_12b_17step": Frida1PexAdc,
     }
     if params.view == "frida2":
         pex_adcs = {"adc_12b_17step": Frida2PexAdc}
         if params.pex_cell not in pex_adcs:
             raise ValueError("frida2 requires pex_cell='adc_12b_17step'")
-    if params.view == "frida65a" and params.pex_cell not in pex_adcs:
-        raise ValueError(f"unsupported FRIDA65A PEX cell {params.pex_cell!r}")
+    if params.view == "frida1" and params.pex_cell not in pex_adcs:
+        raise ValueError(f"unsupported FRIDA-1 PEX cell {params.pex_cell!r}")
     if params.view == "hdl21gen" and params.pex_cell:
         raise ValueError("pex_cell applies only to extracted views")
     if not math.isfinite(float(params.symbol_rate)) or float(params.symbol_rate) <= 0.0:
@@ -292,7 +292,7 @@ def AdcTb(params: AdcTbParams) -> h.Module:
     for bus_name in ("dac_astate_p", "dac_bstate_p", "dac_astate_n", "dac_bstate_n"):
         for stage, state in enumerate(getattr(params, bus_name)):
             # Only the immutable FRIDA-1 namespace needs the old 15-first map.
-            bus_index = 15 - stage if params.view == "frida65a" else stage
+            bus_index = 15 - stage if params.view == "frida1" else stage
             setattr(
                 tb,
                 f"v{bus_name}_{bus_index}",
@@ -372,7 +372,7 @@ def _run_adc_sim(
     from pdk.tsmc65 import site
 
     # Fixed budgets paired with the target pools: four x six or three x eight.
-    spectre_threads = 6 if params.view == "frida65a" else 8
+    spectre_threads = 6 if params.view == "frida1" else 8
     if (params.view != "hdl21gen") != (pex_netlist is not None):
         raise ValueError("extracted views require a PEX input; HDL21 must not have one")
     metadata = {
@@ -395,7 +395,7 @@ def _run_adc_sim(
             summary = json.loads(summary_path.read_text())
             known_disconnect = (
                 expected_disconnect
-                and params.view == "frida65a"
+                and params.view == "frida1"
                 and pex_netlist.stem in ("frida1_2layer_radix17.pex", "frida1_2layer_radix20.pex")
                 and summary.get("warnings") == ["expected LVS mismatch: disconnected historical MOM layer"]
             )
@@ -590,7 +590,7 @@ def frida1_fixed_input_noise(run_dir: Path, *, check: bool = False, netlist_only
                 target = f"frida1_{layers}layer_radix{radix}"
                 pex = root / target / "20260905_171235" / f"{target}.pex.netlist"
                 params = AdcTbParams(
-                    view="frida65a",
+                    view="frida1",
                     pex_cell="adc_12b_17step",
                     dut=AdcParams(adc_bits=12, cdac=cdac),
                     symbol_rate=1.6 * G,
@@ -635,7 +635,7 @@ def frida1_fixed_input_noise_vs_rate(run_dir: Path, *, check: bool = False, netl
                 )
                 for rate, symbol_rate in ((2, 0.32 * G), (6, 0.96 * G), (10, 1.6 * G)):
                     params = AdcTbParams(
-                        view="frida65a",
+                        view="frida1",
                         pex_cell=cell,
                         dut=AdcParams(adc_bits=12, cdac=cdac),
                         symbol_rate=symbol_rate,
@@ -665,7 +665,7 @@ def frida1_transfer_curve(run_dir: Path, *, check: bool = False, netlist_only: b
     from pdk.tsmc65 import site
 
     params = AdcTbParams(
-        view="frida65a",
+        view="frida1",
         symbol_rate=1.6 * G,
         conversions=151,
         vin_diff=hs.LinearSweep(start=-0.75, stop=0.75, step=0.01),
@@ -698,7 +698,7 @@ def frida1_supply_noise_vs_rate(run_dir: Path, *, check: bool = False, netlist_o
                 ("all", (noise_rms_v, noise_rms_v, noise_rms_v)),
             ):
                 params = AdcTbParams(
-                    view="frida65a",
+                    view="frida1",
                     symbol_rate=symbol_rate,
                     conversions=1 if check else 100,
                     vin_diff=h.Vdc.Params(dc=0.05),
